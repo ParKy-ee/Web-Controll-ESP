@@ -1,0 +1,1453 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PlanKO Hardware Remote & IMU Telemetry</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-dark: #080c14;
+      --bg-card: rgba(16, 23, 38, 0.75);
+      --bg-card-hover: rgba(22, 32, 54, 0.85);
+      --border-color: rgba(255, 255, 255, 0.08);
+      --border-glow: rgba(56, 189, 248, 0.25);
+      
+      --accent-cyan: #06b6d4;
+      --accent-blue: #3b82f6;
+      --accent-purple: #8b5cf6;
+      --accent-emerald: #10b981;
+      --accent-amber: #f59e0b;
+      --accent-rose: #f43f5e;
+      
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+      
+      --glow-cyan: 0 0 25px rgba(6, 182, 212, 0.35);
+      --glow-purple: 0 0 25px rgba(139, 92, 246, 0.35);
+      --glow-emerald: 0 0 20px rgba(16, 185, 129, 0.35);
+      --glow-pad: 0 0 20px rgba(244, 63, 94, 0.6);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    body {
+      font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: var(--bg-dark);
+      background-image: 
+        radial-gradient(circle at 15% 15%, rgba(59, 130, 246, 0.12) 0%, transparent 40%),
+        radial-gradient(circle at 85% 85%, rgba(139, 92, 246, 0.12) 0%, transparent 45%),
+        linear-gradient(180deg, rgba(8, 12, 20, 0.85) 0%, #080c14 100%);
+      color: var(--text-main);
+      min-height: 100vh;
+      overflow-x: hidden;
+      padding-bottom: 40px;
+    }
+
+    /* Top Navigation Bar */
+    header {
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      background: rgba(8, 12, 20, 0.8);
+      border-bottom: 1px solid var(--border-color);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      padding: 14px 24px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-logo {
+      width: 38px;
+      height: 38px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 20px;
+      color: white;
+      box-shadow: var(--glow-cyan);
+    }
+
+    .brand-title h1 {
+      font-size: 1.25rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      background: linear-gradient(to right, #ffffff, #94a3b8);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .brand-title p {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* Connection Bar */
+    .connection-panel {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px solid var(--border-color);
+      padding: 6px 12px;
+      border-radius: 30px;
+    }
+
+    .ws-input-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .ws-input-wrap input {
+      background: rgba(0, 0, 0, 0.4);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: #38bdf8;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.85rem;
+      padding: 6px 12px;
+      border-radius: 20px;
+      outline: none;
+      width: 210px;
+      transition: all 0.2s ease;
+    }
+
+    .ws-input-wrap input:focus {
+      border-color: var(--accent-cyan);
+      box-shadow: 0 0 10px rgba(6, 182, 212, 0.3);
+    }
+
+    .btn {
+      font-family: 'Outfit', sans-serif;
+      font-weight: 600;
+      font-size: 0.85rem;
+      padding: 6px 16px;
+      border-radius: 20px;
+      border: none;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s ease;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
+      color: white;
+      box-shadow: 0 2px 10px rgba(6, 182, 212, 0.3);
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 15px rgba(6, 182, 212, 0.4);
+    }
+
+    .btn-danger {
+      background: rgba(244, 63, 94, 0.2);
+      border: 1px solid rgba(244, 63, 94, 0.4);
+      color: #fda4af;
+    }
+
+    .btn-danger:hover {
+      background: rgba(244, 63, 94, 0.3);
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text-main);
+      border: 1px solid var(--border-color);
+    }
+
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.15);
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px;
+      border-radius: 20px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      background: rgba(0, 0, 0, 0.4);
+      border: 1px solid var(--border-color);
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+
+    .status-disconnected .dot {
+      background: var(--accent-rose);
+      box-shadow: 0 0 8px var(--accent-rose);
+    }
+    .status-connected .dot {
+      background: var(--accent-emerald);
+      box-shadow: 0 0 10px var(--accent-emerald);
+      animation: pulse 1.8s infinite;
+    }
+    .status-connecting .dot {
+      background: var(--accent-amber);
+      box-shadow: 0 0 8px var(--accent-amber);
+      animation: blink 1s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.6; transform: scale(1.2); }
+    }
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    /* Container Layout */
+    .container {
+      max-width: 1400px;
+      margin: 24px auto;
+      padding: 0 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    /* Quick Info Bar */
+    .telemetry-stats-bar {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 14px;
+    }
+
+    .stat-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      padding: 14px 18px;
+      backdrop-filter: blur(12px);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      transition: border-color 0.2s;
+    }
+
+    .stat-card:hover {
+      border-color: var(--border-glow);
+    }
+
+    .stat-info p {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 4px;
+    }
+
+    .stat-info h3 {
+      font-size: 1.3rem;
+      font-weight: 700;
+      font-family: 'JetBrains Mono', monospace;
+      color: #fff;
+    }
+
+    .stat-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.2rem;
+    }
+
+    /* Main Section: Interactive Mat & 4 IMU Cards */
+    .grid-main {
+      display: grid;
+      grid-template-columns: 1fr 1.35fr;
+      gap: 24px;
+    }
+
+    @media (max-width: 1100px) {
+      .grid-main {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* Card Shell */
+    .panel {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 20px;
+      padding: 22px;
+      backdrop-filter: blur(16px);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+      position: relative;
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 20px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .panel-title {
+      font-size: 1.1rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .panel-title span {
+      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    /* Interactive Plank Mat Remote */
+    .mat-wrapper {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .mat-container {
+      width: 100%;
+      background: radial-gradient(circle at 50% 50%, rgba(30, 41, 59, 0.6) 0%, rgba(15, 23, 42, 0.8) 100%);
+      border: 2px solid rgba(255, 255, 255, 0.1);
+      border-radius: 24px;
+      padding: 24px 16px;
+      display: grid;
+      grid-template-columns: 1fr 1.1fr 1fr;
+      gap: 16px;
+      box-shadow: inset 0 0 30px rgba(0, 0, 0, 0.6);
+      position: relative;
+    }
+
+    .mat-col {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .pad-btn {
+      background: linear-gradient(180deg, rgba(30, 41, 59, 0.8) 0%, rgba(15, 23, 42, 0.95) 100%);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 12px;
+      padding: 12px 10px;
+      color: #e2e8f0;
+      font-family: 'Outfit', sans-serif;
+      font-weight: 700;
+      font-size: 1rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      cursor: pointer;
+      transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .pad-btn::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+    }
+
+    .pad-btn .shortcut {
+      font-size: 0.7rem;
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--text-dim);
+      background: rgba(0, 0, 0, 0.3);
+      padding: 2px 6px;
+      border-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .pad-btn:hover {
+      transform: translateY(-2px);
+      border-color: rgba(56, 189, 248, 0.5);
+      box-shadow: 0 6px 14px rgba(56, 189, 248, 0.2);
+      color: #38bdf8;
+    }
+
+    .pad-btn:active, .pad-btn.pressed {
+      transform: scale(0.96);
+      background: linear-gradient(135deg, #f43f5e 0%, #ec4899 100%) !important;
+      border-color: #fda4af !important;
+      color: #ffffff !important;
+      box-shadow: 0 0 25px rgba(244, 63, 94, 0.8) !important;
+    }
+
+    .pad-btn.pressed .shortcut {
+      color: rgba(255, 255, 255, 0.9);
+      background: rgba(0, 0, 0, 0.25);
+    }
+
+    /* Plank Silhouette Center Area */
+    .mat-center {
+      border: 1px dashed rgba(255, 255, 255, 0.12);
+      border-radius: 16px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 16px 8px;
+      gap: 12px;
+      background: rgba(0, 0, 0, 0.2);
+    }
+
+    .mat-center svg {
+      width: 80px;
+      height: 140px;
+      opacity: 0.35;
+      filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.3));
+      transition: all 0.3s ease;
+    }
+
+    .mat-center.active svg {
+      opacity: 0.85;
+      filter: drop-shadow(0 0 15px rgba(16, 185, 129, 0.6));
+    }
+
+    .mat-center p {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-dim);
+      font-weight: 600;
+    }
+
+    /* Mat Controls */
+    .mat-controls {
+      display: flex;
+      gap: 10px;
+      width: 100%;
+    }
+
+    .mat-controls button {
+      flex: 1;
+      justify-content: center;
+    }
+
+    /* 4 IMU Nodes Grid */
+    .imu-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 16px;
+    }
+
+    @media (max-width: 650px) {
+      .imu-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .node-card {
+      background: rgba(15, 23, 42, 0.65);
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      transition: all 0.25s ease;
+      position: relative;
+    }
+
+    .node-card.connected {
+      border-color: rgba(56, 189, 248, 0.3);
+    }
+
+    .node-card.offline {
+      opacity: 0.6;
+    }
+
+    .node-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .node-id-badge {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .node-badge-num {
+      width: 26px;
+      height: 26px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+      color: white;
+      font-weight: 700;
+      font-size: 0.85rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .node-title {
+      font-weight: 700;
+      font-size: 0.95rem;
+    }
+
+    .node-source-tag {
+      font-size: 0.68rem;
+      font-weight: 600;
+      font-family: 'JetBrains Mono', monospace;
+      padding: 2px 8px;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      color: var(--text-muted);
+    }
+
+    .node-source-tag.mock {
+      background: rgba(245, 158, 11, 0.15);
+      color: #fde68a;
+      border-color: rgba(245, 158, 11, 0.3);
+    }
+
+    .node-source-tag.real {
+      background: rgba(16, 185, 129, 0.15);
+      color: #a7f3d0;
+      border-color: rgba(16, 185, 129, 0.3);
+    }
+
+    /* 3D Orientation Visualization Box */
+    .cube-scene {
+      width: 100%;
+      height: 80px;
+      perspective: 400px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.25);
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.04);
+      overflow: hidden;
+      position: relative;
+    }
+
+    .cube-board {
+      width: 80px;
+      height: 48px;
+      background: linear-gradient(135deg, #1e293b, #0f172a);
+      border: 1.5px solid #38bdf8;
+      border-radius: 8px;
+      box-shadow: 0 0 15px rgba(56, 189, 248, 0.4);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #38bdf8;
+      font-weight: 800;
+      font-size: 0.75rem;
+      letter-spacing: 0.05em;
+      transform-style: preserve-3d;
+      transition: transform 0.05s ease-out;
+    }
+
+    .cube-board::after {
+      content: '▲ FRONT';
+      font-size: 0.55rem;
+      color: #f43f5e;
+      position: absolute;
+      top: 3px;
+    }
+
+    /* Angles & Gauges */
+    .angles-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+      background: rgba(0, 0, 0, 0.25);
+      padding: 8px;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    .angle-item {
+      text-align: center;
+    }
+
+    .angle-label {
+      font-size: 0.68rem;
+      color: var(--text-dim);
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    .angle-val {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: #f1f5f9;
+    }
+
+    /* Accelerometer bar */
+    .accel-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+      padding: 0 4px;
+    }
+
+    /* Sequence & stats footer */
+    .node-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 0.72rem;
+      color: var(--text-dim);
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      padding-top: 8px;
+    }
+
+    /* Bottom: Console & Automation Toolbar */
+    .console-panel {
+      margin-top: 8px;
+    }
+
+    .console-header-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .console-body {
+      background: #050811;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 12px;
+      height: 180px;
+      overflow-y: auto;
+      padding: 12px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.78rem;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .log-line {
+      display: flex;
+      gap: 10px;
+      line-height: 1.4;
+      word-break: break-all;
+    }
+
+    .log-time {
+      color: var(--text-dim);
+      flex-shrink: 0;
+    }
+
+    .log-tag {
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 0.68rem;
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+
+    .tag-pad { background: rgba(244, 63, 94, 0.2); color: #fda4af; }
+    .tag-imu { background: rgba(6, 182, 212, 0.2); color: #67e8f9; }
+    .tag-sys { background: rgba(139, 92, 246, 0.2); color: #c4b5fd; }
+    .tag-err { background: rgba(239, 68, 68, 0.25); color: #fca5a5; }
+
+    .log-msg {
+      color: #e2e8f0;
+    }
+
+    /* Toast Notification */
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: rgba(15, 23, 42, 0.95);
+      border: 1px solid var(--accent-cyan);
+      box-shadow: var(--glow-cyan);
+      border-radius: 12px;
+      padding: 12px 18px;
+      color: white;
+      font-weight: 600;
+      font-size: 0.9rem;
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      transform: translateY(100px);
+      opacity: 0;
+      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .toast.show {
+      transform: translateY(0);
+      opacity: 1;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <header>
+    <div class="brand">
+      <div class="brand-logo">P</div>
+      <div class="brand-title">
+        <h1>PlanKO Hardware Remote</h1>
+        <p>ESP32 Gateway & IMU Sensor Control Panel</p>
+      </div>
+    </div>
+
+    <!-- Connection Bar -->
+    <div class="connection-panel">
+      <div class="ws-input-wrap">
+        <label for="wsUrl" style="font-size:0.75rem; color:var(--text-muted);">WS URL:</label>
+        <input type="text" id="wsUrl" value="ws://192.168.1.200:81/" placeholder="ws://192.168.1.200:81/" />
+      </div>
+
+      <button id="btnConnect" class="btn btn-primary" onclick="toggleConnect()">
+        <span id="btnConnectText">Connect</span>
+      </button>
+
+      <div id="statusBadge" class="status-badge status-disconnected">
+        <div class="dot"></div>
+        <span id="statusText">DISCONNECTED</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <div class="container">
+
+    <!-- Quick Stats HUD -->
+    <div class="telemetry-stats-bar">
+      <div class="stat-card">
+        <div class="stat-info">
+          <p>Gateway IP</p>
+          <h3 id="statIp">---.---.---.---</h3>
+        </div>
+        <div class="stat-icon">🌐</div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-info">
+          <p>Connected Nodes</p>
+          <h3 id="statNodesCount">0 / 4</h3>
+        </div>
+        <div class="stat-icon">📡</div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-info">
+          <p>Gateway Latency</p>
+          <h3 id="statLatency">-- ms</h3>
+        </div>
+        <div class="stat-icon">⚡</div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-info">
+          <p>Total Pad Events</p>
+          <h3 id="statPadEvents">0</h3>
+        </div>
+        <div class="stat-icon">🎮</div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-info">
+          <p>Uptime</p>
+          <h3 id="statUptime">00:00</h3>
+        </div>
+        <div class="stat-icon">⏱️</div>
+      </div>
+    </div>
+
+    <!-- Main Grid: Interactive Mat & 4 IMUs -->
+    <div class="grid-main">
+
+      <!-- LEFT: Interactive Touch Pad Remote -->
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span>🎮 Plank Touch Pad Remote</span>
+          </div>
+          <span style="font-size:0.75rem; color:var(--text-dim);">Click or use keyboard</span>
+        </div>
+
+        <div class="mat-wrapper">
+          <div class="mat-container">
+            <!-- Left Pads (L1 - L8) -->
+            <div class="mat-col" id="colLeftPads">
+              <!-- Dynamically generated or static L1-L8 -->
+            </div>
+
+            <!-- Center Silhouette -->
+            <div class="mat-center" id="matCenter">
+              <!-- Human Plank Silhouette SVG -->
+              <svg viewBox="0 0 100 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <!-- Head -->
+                <circle cx="50" cy="35" r="14" fill="#38bdf8" />
+                <!-- Torso / Spine -->
+                <path d="M42 55 H58 L54 135 H46 Z" fill="#38bdf8" />
+                <!-- Arms / Elbows Planking -->
+                <path d="M35 65 L22 95 L22 115" stroke="#38bdf8" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" />
+                <path d="M65 65 L78 95 L78 115" stroke="#38bdf8" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" />
+                <!-- Legs Planking -->
+                <path d="M45 135 L40 185" stroke="#38bdf8" stroke-width="6" stroke-linecap="round" />
+                <path d="M55 135 L60 185" stroke="#38bdf8" stroke-width="6" stroke-linecap="round" />
+              </svg>
+              <p id="centerMatStatus">PLANK MAT READY</p>
+            </div>
+
+            <!-- Right Pads (R1 - R8) -->
+            <div class="mat-col" id="colRightPads">
+              <!-- Dynamically generated R1-R8 -->
+            </div>
+          </div>
+
+          <!-- Mat Automation Controls -->
+          <div class="mat-controls">
+            <button class="btn btn-secondary" onclick="simulateRhythmDemo()">
+              🎵 Test Routine Demo
+            </button>
+            <button class="btn btn-secondary" onclick="clearLogs()">
+              🗑️ Clear Console
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT: 4 IMU Sensor Telemetry Nodes -->
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span>📊 4-Node 6-DOF IMU Telemetry</span>
+          </div>
+          <button class="btn btn-secondary" style="font-size:0.75rem; padding:4px 12px;" onclick="sendCalibrateCmd()">
+            🎯 Zero / Calibrate All
+          </button>
+        </div>
+
+        <div class="imu-grid" id="imuGrid">
+          <!-- Node Cards 1 to 4 generated here -->
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Bottom: Live Event Console Log -->
+    <div class="panel console-panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span>📜 Live Hardware & Network Console</span>
+        </div>
+        <div class="console-header-controls">
+          <label style="font-size:0.75rem; color:var(--text-muted); display:flex; align-items:center; gap:6px;">
+            <input type="checkbox" id="chkAutoScroll" checked> Auto-Scroll
+          </label>
+          <button class="btn btn-secondary" style="font-size:0.75rem; padding:4px 10px;" onclick="clearLogs()">Clear</button>
+        </div>
+      </div>
+
+      <div class="console-body" id="consoleBody">
+        <div class="log-line">
+          <span class="log-time">[INIT]</span>
+          <span class="log-tag tag-sys">SYS</span>
+          <span class="log-msg">PlanKO Remote Dashboard ready. Connect to Gateway WebSocket to begin streaming.</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toast" class="toast">
+    <span id="toastIcon">⚡</span>
+    <span id="toastMsg">Pad Triggered!</span>
+  </div>
+
+  <script>
+    // Configuration & State
+    let socket = null;
+    let isConnected = false;
+    let padEventCount = 0;
+    let latencyPingTime = 0;
+    let uptimeSeconds = 0;
+    let uptimeInterval = null;
+    let rhythmInterval = null;
+
+    // Node Telemetry State (Nodes 1-4)
+    const nodes = {
+      1: { connected: false, isMock: false, pitch: 0, roll: 0, yaw: 0, ax: 0, ay: 0, az: 9.8, seq: 0, dropped: 0, lastSeen: 0 },
+      2: { connected: false, isMock: false, pitch: 0, roll: 0, yaw: 0, ax: 0, ay: 0, az: 9.8, seq: 0, dropped: 0, lastSeen: 0 },
+      3: { connected: false, isMock: false, pitch: 0, roll: 0, yaw: 0, ax: 0, ay: 0, az: 9.8, seq: 0, dropped: 0, lastSeen: 0 },
+      4: { connected: false, isMock: false, pitch: 0, roll: 0, yaw: 0, ax: 0, ay: 0, az: 9.8, seq: 0, dropped: 0, lastSeen: 0 },
+    };
+
+    // Pad Definitions with Keyboard Shortcuts
+    const LEFT_PADS = [
+      { id: 'L1', key: '1' },
+      { id: 'L2', key: '2' },
+      { id: 'L3', key: '3' },
+      { id: 'L4', key: '4' },
+      { id: 'L5', key: '5' },
+      { id: 'L6', key: '6' },
+      { id: 'L7', key: '7' },
+      { id: 'L8', key: '8' },
+    ];
+
+    const RIGHT_PADS = [
+      { id: 'R1', key: 'Q' },
+      { id: 'R2', key: 'W' },
+      { id: 'R3', key: 'E' },
+      { id: 'R4', key: 'R' },
+      { id: 'R5', key: 'T' },
+      { id: 'R6', key: 'Y' },
+      { id: 'R7', key: 'U' },
+      { id: 'R8', key: 'I' },
+    ];
+
+    // Initialize UI on Load
+    window.addEventListener('DOMContentLoaded', () => {
+      // Load saved URL from localStorage if any
+      const savedUrl = localStorage.getItem('planko_ws_url');
+      if (savedUrl) {
+        document.getElementById('wsUrl').value = savedUrl;
+      }
+
+      renderPads();
+      renderImuCards();
+      setupKeyboardControls();
+    });
+
+    // Render Left & Right Pad Columns
+    function renderPads() {
+      const leftCol = document.getElementById('colLeftPads');
+      const rightCol = document.getElementById('colRightPads');
+
+      leftCol.innerHTML = LEFT_PADS.map(p => `
+        <button id="pad_${p.id}" class="pad-btn" onclick="triggerPad('${p.id}')">
+          <span>${p.id}</span>
+          <span class="shortcut">${p.key}</span>
+        </button>
+      `).join('');
+
+      rightCol.innerHTML = RIGHT_PADS.map(p => `
+        <button id="pad_${p.id}" class="pad-btn" onclick="triggerPad('${p.id}')">
+          <span>${p.id}</span>
+          <span class="shortcut">${p.key}</span>
+        </button>
+      `).join('');
+    }
+
+    // Render 4 IMU Node Cards
+    function renderImuCards() {
+      const grid = document.getElementById('imuGrid');
+      grid.innerHTML = [1, 2, 3, 4].map(id => `
+        <div id="node_card_${id}" class="node-card offline">
+          <div class="node-header">
+            <div class="node-id-badge">
+              <div class="node-badge-num">${id}</div>
+              <div>
+                <div class="node-title">PlanKO IMU #${id}</div>
+              </div>
+            </div>
+            <span id="node_tag_${id}" class="node-source-tag">OFFLINE</span>
+          </div>
+
+          <!-- 3D Orientation Board -->
+          <div class="cube-scene">
+            <div id="cube_${id}" class="cube-board">IMU #${id}</div>
+          </div>
+
+          <!-- Angles Display -->
+          <div class="angles-grid">
+            <div class="angle-item">
+              <div class="angle-label">Pitch</div>
+              <div id="val_pitch_${id}" class="angle-val">0.0°</div>
+            </div>
+            <div class="angle-item">
+              <div class="angle-label">Roll</div>
+              <div id="val_roll_${id}" class="angle-val">0.0°</div>
+            </div>
+            <div class="angle-item">
+              <div class="angle-label">Yaw</div>
+              <div id="val_yaw_${id}" class="angle-val">0.0°</div>
+            </div>
+          </div>
+
+          <!-- Accelerometer -->
+          <div class="accel-row">
+            <span>Ax: <b id="val_ax_${id}" style="color:#e2e8f0;">0.00</b></span>
+            <span>Ay: <b id="val_ay_${id}" style="color:#e2e8f0;">0.00</b></span>
+            <span>Az: <b id="val_az_${id}" style="color:#e2e8f0;">9.81</b></span>
+          </div>
+
+          <!-- Footer stats -->
+          <div class="node-footer">
+            <span id="val_seq_${id}">Seq: 0</span>
+            <span id="val_drops_${id}">Drops: 0</span>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    // WebSocket Toggle Connect
+    function toggleConnect() {
+      if (isConnected) {
+        disconnectWebSocket();
+      } else {
+        connectWebSocket();
+      }
+    }
+
+    function connectWebSocket() {
+      const urlInput = document.getElementById('wsUrl');
+      let url = urlInput.value.trim();
+      if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
+        url = 'ws://' + url;
+        urlInput.value = url;
+      }
+
+      localStorage.setItem('planko_ws_url', url);
+
+      updateStatus('connecting', 'CONNECTING...');
+      logMessage('SYS', `Connecting to WebSocket: ${url}`);
+
+      try {
+        socket = new WebSocket(url);
+      } catch (err) {
+        logMessage('ERR', `Invalid WebSocket URL: ${err.message}`);
+        updateStatus('disconnected', 'DISCONNECTED');
+        return;
+      }
+
+      socket.onopen = () => {
+        isConnected = true;
+        updateStatus('connected', 'CONNECTED');
+        document.getElementById('btnConnectText').innerText = 'Disconnect';
+        document.getElementById('btnConnect').className = 'btn btn-danger';
+        logMessage('SYS', `✅ Connected to Gateway at ${url}`);
+        showToast('Connected to Gateway!', '🟢');
+
+        // Extract IP for stats
+        try {
+          const u = new URL(url);
+          document.getElementById('statIp').innerText = u.hostname;
+        } catch(e) {}
+
+        sendJson({ cmd: 'status' });
+
+        // Start ping interval
+        startPingTimer();
+      };
+
+      let lastMsgTime = Date.now();
+      let msgWatchdog = setInterval(() => {
+        if (isConnected && socket && (Date.now() - lastMsgTime > 2500)) {
+          logMessage('ERR', '⚠️ Gateway silence timeout (No data for 2.5s). Gateway may be unplugged.');
+          disconnectWebSocket();
+        }
+      }, 1000);
+
+      socket.onmessage = (event) => {
+        lastMsgTime = Date.now();
+        handleIncomingMessage(event.data);
+      };
+
+      socket.onerror = (err) => {
+        logMessage('ERR', 'WebSocket error encountered.');
+      };
+
+      socket.onclose = () => {
+        if (msgWatchdog) clearInterval(msgWatchdog);
+        isConnected = false;
+        updateStatus('disconnected', 'DISCONNECTED');
+        document.getElementById('btnConnectText').innerText = 'Connect';
+        document.getElementById('btnConnect').className = 'btn btn-primary';
+        logMessage('SYS', '❌ Disconnected from Gateway.');
+        showToast('Disconnected from Gateway', '🔴');
+        resetNodeStates();
+        stopPingTimer();
+      };
+    }
+
+    function disconnectWebSocket() {
+      if (socket) {
+        socket.close();
+      }
+    }
+
+    function updateStatus(state, text) {
+      const badge = document.getElementById('statusBadge');
+      badge.className = `status-badge status-${state}`;
+      document.getElementById('statusText').innerText = text;
+    }
+
+    // Handle Incoming WebSocket Packets
+    function handleIncomingMessage(rawData) {
+      try {
+        const data = JSON.parse(rawData);
+
+        // 1. IMU Stream Broadcast
+        if (data.type === 'imu_stream') {
+          handleImuStream(data);
+          return;
+        }
+
+        // 2. Pad Press Event
+        if (data.sensorId && data.value !== undefined) {
+          handlePadEvent(data.sensorId);
+          return;
+        }
+
+        // 3. Gateway Status Response
+        if (data.type === 'status_response') {
+          if (data.ip) document.getElementById('statIp').innerText = data.ip;
+          if (data.uptime) updateUptime(data.uptime);
+          logMessage('SYS', `Gateway Status: IP=${data.ip}, Heap=${data.heap}B, Clients=${data.wsClients}`);
+          return;
+        }
+
+        // Default: general JSON log
+        logMessage('SYS', rawData);
+      } catch (e) {
+        // Plain text message
+        logMessage('SYS', rawData);
+      }
+    }
+
+    // Process IMU Stream Broadcast
+    function handleImuStream(data) {
+      if (data.gateway) {
+        document.getElementById('statNodesCount').innerText = `${data.gateway.connectedNodes || 0} / 4`;
+      }
+
+      const activeNodes = new Set();
+      if (Array.isArray(data.nodes)) {
+        data.nodes.forEach(n => {
+          const id = n.nodeId;
+          if (id >= 1 && id <= 4) {
+            activeNodes.add(id);
+            updateNodeCard(id, n);
+          }
+        });
+      }
+
+      // Instantly mark any node that didn't report in this packet as OFFLINE
+      for (let i = 1; i <= 4; i++) {
+        if (!activeNodes.has(i)) {
+          const card = document.getElementById(`node_card_${i}`);
+          const tag = document.getElementById(`node_tag_${i}`);
+          if (card && card.classList.contains('connected')) {
+            card.className = 'node-card offline';
+            if (tag) {
+              tag.className = 'node-source-tag';
+              tag.innerText = 'OFFLINE';
+            }
+          }
+        }
+      }
+    }
+
+    // Update single node card UI
+    function updateNodeCard(id, data) {
+      const card = document.getElementById(`node_card_${id}`);
+      const tag = document.getElementById(`node_tag_${id}`);
+      const cube = document.getElementById(`cube_${id}`);
+
+      card.className = 'node-card connected';
+
+      if (data.isMock) {
+        tag.className = 'node-source-tag mock';
+        tag.innerText = 'MOCK SIM';
+      } else {
+        tag.className = 'node-source-tag real';
+        tag.innerText = 'REAL IMU';
+      }
+
+      // Angles
+      const p = (data.pitch || 0).toFixed(1);
+      const r = (data.roll || 0).toFixed(1);
+      const y = (data.yaw || 0).toFixed(1);
+
+      document.getElementById(`val_pitch_${id}`).innerText = `${p}°`;
+      document.getElementById(`val_roll_${id}`).innerText = `${r}°`;
+      document.getElementById(`val_yaw_${id}`).innerText = `${y}°`;
+
+      // Accelerometer
+      if (Array.isArray(data.accel) && data.accel.length >= 3) {
+        document.getElementById(`val_ax_${id}`).innerText = data.accel[0].toFixed(2);
+        document.getElementById(`val_ay_${id}`).innerText = data.accel[1].toFixed(2);
+        document.getElementById(`val_az_${id}`).innerText = data.accel[2].toFixed(2);
+      }
+
+      // Stats
+      document.getElementById(`val_seq_${id}`).innerText = `Seq: ${data.seq || 0}`;
+      document.getElementById(`val_drops_${id}`).innerText = `Drops: ${data.dropped || 0}`;
+
+      // 3D Visualizer Tilt: CSS Transform rotateX/Y/Z
+      // In aero terms: Pitch = rotateX, Roll = rotateY/Z
+      cube.style.transform = `rotateX(${-data.pitch}deg) rotateZ(${data.roll}deg) rotateY(${data.yaw}deg)`;
+    }
+
+    function resetNodeStates() {
+      for (let i = 1; i <= 4; i++) {
+        const card = document.getElementById(`node_card_${i}`);
+        const tag = document.getElementById(`node_tag_${i}`);
+        const cube = document.getElementById(`cube_${i}`);
+        if (card) card.className = 'node-card offline';
+        if (tag) {
+          tag.className = 'node-source-tag';
+          tag.innerText = 'OFFLINE';
+        }
+        if (cube) cube.style.transform = 'rotateX(0deg) rotateY(0deg) rotateZ(0deg)';
+      }
+      document.getElementById('statNodesCount').innerText = '0 / 4';
+    }
+
+    // Trigger Pad Event
+    function triggerPad(sensorId) {
+      animatePadButton(sensorId);
+
+      padEventCount++;
+      document.getElementById('statPadEvents').innerText = padEventCount;
+
+      logMessage('PAD', `Triggered: ${sensorId}`);
+      showToast(`Pad ${sensorId} Pressed!`, '⚡');
+
+      // Send to WebSocket
+      if (isConnected && socket && socket.readyState === WebSocket.OPEN) {
+        sendJson({ cmd: 'pad', pad: sensorId });
+      } else {
+        logMessage('SYS', `⚠️ Sent locally (WebSocket not connected)`);
+      }
+    }
+
+    // Handle Pad Event received from Gateway
+    function handlePadEvent(sensorId) {
+      animatePadButton(sensorId);
+      padEventCount++;
+      document.getElementById('statPadEvents').innerText = padEventCount;
+      logMessage('PAD', `Received Broadcast: ${sensorId}`);
+      showToast(`Mat Broadcast: ${sensorId}`, '✨');
+    }
+
+    function animatePadButton(sensorId) {
+      const btn = document.getElementById(`pad_${sensorId}`);
+      const center = document.getElementById('matCenter');
+
+      if (btn) {
+        btn.classList.add('pressed');
+        setTimeout(() => btn.classList.remove('pressed'), 250);
+      }
+
+      if (center) {
+        center.classList.add('active');
+        document.getElementById('centerMatStatus').innerText = `ACTIVE: ${sensorId}`;
+        setTimeout(() => {
+          center.classList.remove('active');
+          document.getElementById('centerMatStatus').innerText = 'PLANK MAT READY';
+        }, 300);
+      }
+    }
+
+    // Keyboard Shortcuts
+    function setupKeyboardControls() {
+      window.addEventListener('keydown', (e) => {
+        // Ignore if user is typing in the input box
+        if (e.target.tagName === 'INPUT') return;
+
+        const key = e.key.toUpperCase();
+
+        // Check Left pads
+        const lPad = LEFT_PADS.find(p => p.key === key);
+        if (lPad) {
+          e.preventDefault();
+          triggerPad(lPad.id);
+          return;
+        }
+
+        // Check Right pads
+        const rPad = RIGHT_PADS.find(p => p.key === key);
+        if (rPad) {
+          e.preventDefault();
+          triggerPad(rPad.id);
+          return;
+        }
+
+        // Spacebar triggers L1
+        if (e.code === 'Space') {
+          e.preventDefault();
+          triggerPad('L1');
+        }
+      });
+    }
+
+    // Send Calibrate Command
+    function sendCalibrateCmd() {
+      logMessage('SYS', 'Sending Zero/Calibrate command to Gateway...');
+      if (isConnected && socket) {
+        sendJson({ cmd: 'cal' });
+        showToast('Calibrate Command Sent', '🎯');
+      } else {
+        showToast('Connect to Gateway first', '⚠️');
+      }
+    }
+
+    // Test Rhythm Demo Sequence
+    function simulateRhythmDemo() {
+      if (rhythmInterval) {
+        clearInterval(rhythmInterval);
+        rhythmInterval = null;
+        logMessage('SYS', '⏹️ Rhythm Demo Stopped.');
+        showToast('Rhythm Demo Stopped', '⏹️');
+        return;
+      }
+
+      logMessage('SYS', '▶️ Starting Rhythm Routine Test...');
+      showToast('Running Rhythm Routine...', '🎵');
+
+      const sequence = ['L1', 'R1', 'L2', 'R2', 'L3', 'R3', 'L1', 'R1'];
+      let step = 0;
+
+      rhythmInterval = setInterval(() => {
+        const pad = sequence[step % sequence.length];
+        triggerPad(pad);
+        step++;
+
+        if (step >= 16) {
+          clearInterval(rhythmInterval);
+          rhythmInterval = null;
+          logMessage('SYS', '✅ Routine Demo Completed.');
+        }
+      }, 500);
+    }
+
+    // Helpers
+    function sendJson(obj) {
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify(obj));
+      }
+    }
+
+    function startPingTimer() {
+      uptimeInterval = setInterval(() => {
+        uptimeSeconds++;
+        const mins = String(Math.floor(uptimeSeconds / 60)).padStart(2, '0');
+        const secs = String(uptimeSeconds % 60).padStart(2, '0');
+        document.getElementById('statUptime').innerText = `${mins}:${secs}`;
+
+        // Measure roundtrip latency
+        if (isConnected && socket) {
+          latencyPingTime = performance.now();
+          sendJson({ cmd: 'status' });
+        }
+      }, 2000);
+    }
+
+    function stopPingTimer() {
+      if (uptimeInterval) {
+        clearInterval(uptimeInterval);
+        uptimeInterval = null;
+      }
+      uptimeSeconds = 0;
+      document.getElementById('statUptime').innerText = '00:00';
+      document.getElementById('statLatency').innerText = '-- ms';
+    }
+
+    function updateUptime(secs) {
+      if (latencyPingTime > 0) {
+        const rtt = Math.round(performance.now() - latencyPingTime);
+        document.getElementById('statLatency').innerText = `${rtt} ms`;
+        latencyPingTime = 0;
+      }
+    }
+
+    function logMessage(tag, msg) {
+      const body = document.getElementById('consoleBody');
+      const line = document.createElement('div');
+      line.className = 'log-line';
+
+      const d = new Date();
+      const timeStr = d.toTimeString().split(' ')[0] + '.' + String(d.getMilliseconds()).padStart(3, '0');
+
+      let tagClass = 'tag-sys';
+      if (tag === 'PAD') tagClass = 'tag-pad';
+      if (tag === 'IMU') tagClass = 'tag-imu';
+      if (tag === 'ERR') tagClass = 'tag-err';
+
+      line.innerHTML = `
+        <span class="log-time">[${timeStr}]</span>
+        <span class="log-tag ${tagClass}">${tag}</span>
+        <span class="log-msg">${escapeHtml(msg)}</span>
+      `;
+
+      body.appendChild(line);
+
+      if (document.getElementById('chkAutoScroll').checked) {
+        body.scrollTop = body.scrollHeight;
+      }
+    }
+
+    function clearLogs() {
+      document.getElementById('consoleBody').innerHTML = '';
+      logMessage('SYS', 'Console cleared.');
+    }
+
+    function showToast(msg, icon = '⚡') {
+      const toast = document.getElementById('toast');
+      document.getElementById('toastMsg').innerText = msg;
+      document.getElementById('toastIcon').innerText = icon;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 2200);
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.innerText = text;
+      return div.innerHTML;
+    }
+  </script>
+</body>
+</html>

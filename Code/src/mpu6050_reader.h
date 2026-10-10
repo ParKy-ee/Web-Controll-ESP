@@ -118,7 +118,7 @@ public:
 
         // If sensor was not detected, try reconnecting periodically without spamming I2C
         if (!isDetected) {
-            if (now - lastRetryMillis >= 3000) {
+            if (now - lastRetryMillis >= 10000) {
                 lastRetryMillis = now;
                 // Quick ping without spam
                 Wire.beginTransmission(MPU_ADDR);
