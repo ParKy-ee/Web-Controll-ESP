@@ -19,10 +19,17 @@ public:
     float gy = 0.0f;
     float gz = 0.0f;
 
+    int16_t rawAx = 0;
+    int16_t rawAy = 0;
+    int16_t rawAz = 0;
+    int16_t rawGx = 0;
+    int16_t rawGy = 0;
+    int16_t rawGz = 0;
+
     bool isDetected = false;
     bool isCalibrated = false;
 
-    bool begin(int sdaPin = 4, int sclPin = 5) {
+    bool begin(int sdaPin = 8, int sclPin = 9) {
         _sdaPin = sdaPin;
         _sclPin = sclPin;
 
@@ -135,6 +142,13 @@ public:
             return false;
         }
 
+        this->rawAx = rawAx;
+        this->rawAy = rawAy;
+        this->rawAz = rawAz;
+        this->rawGx = rawGx;
+        this->rawGy = rawGy;
+        this->rawGz = rawGz;
+
         // Convert raw accel to m/s^2 (AFS_SEL=1 -> 8192 LSB/g, 1g = 9.80665 m/s^2)
         ax = ((float)rawAx / 8192.0f - axOffset) * 9.80665f;
         ay = ((float)rawAy / 8192.0f - ayOffset) * 9.80665f;
@@ -168,8 +182,8 @@ public:
 
 private:
     const uint8_t MPU_ADDR = 0x68;
-    int _sdaPin = 4;
-    int _sclPin = 5;
+    int _sdaPin = 8;
+    int _sclPin = 9;
     float gxOffset = 0, gyOffset = 0, gzOffset = 0;
     float axOffset = 0, ayOffset = 0, azOffset = 0;
     unsigned long lastFilterMicros = 0;

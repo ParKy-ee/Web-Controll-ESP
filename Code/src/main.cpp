@@ -6,22 +6,23 @@
  * Supports 2 Unified Roles via PlatformIO build flags:
  *   1. ROLE_GATEWAY:
  *      - BLE Central (connects to up to 4 IMU Nodes via BLE GATT)
- *      - Wi-Fi Station + WebSocket Server on Port 81
+ *      - Wi-Fi Station + local Dataset HTTP Server on Port 80
  *      - 16-pad Smart Mat Switch Inputs + Debounce + Serial Simulator
  *      - (Optional) MAX30102 Pulse Oximeter
  *      - Broadcasts consolidated IMU + Touch events to Expo App
  *
  *   2. ROLE_NODE:
  *      - BLE Peripheral (Advertises as PlanKO_IMU_1 .. PlanKO_IMU_4)
- *      - Reads MPU-6050 6-DOF IMU over I2C (SDA=4, SCL=5)
+ *      - Reads MPU-6050 6-DOF IMU over I2C (SDA=8, SCL=9)
  *      - Computes Pitch, Roll, Yaw via Complementary Filter
- *      - Transmits 20-byte binary ImuPacket via BLE Notifications
+ *      - Transmits telemetry and raw IMU packets via BLE Notifications
  * ==============================================================================
  */
 
 #include "common_types.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <stdlib.h>
 #include <Wire.h>
 
 #if defined(ROLE_NODE)
@@ -37,11 +38,11 @@
 #endif
 
 #ifndef I2C_SDA_PIN
-#define I2C_SDA_PIN 4
+#define I2C_SDA_PIN 8
 #endif
 
 #ifndef I2C_SCL_PIN
-#define I2C_SCL_PIN 5
+#define I2C_SCL_PIN 9
 #endif
 
 // Sampling frequency: 20Hz (50ms) - Optimal for BLE & Wi-Fi coexistence and queue stability
@@ -180,51 +181,38 @@ void loop() {
   // Read IMU and send BLE Notification
   if (now - lastSampleTime >= SAMPLE_INTERVAL_MS) {
     lastSampleTime = now;
+    const bool sampleReady = imu.isDetected ? imu.update() : (imu.update() && imu.isDetected);
+    if (sampleReady && pImuCharacteristic != nullptr &&
+        (bleConnected || pImuCharacteristic->getSubscribedCount() > 0)) {
+      const uint16_t sequence = ++packetSequence;
+      const uint32_t sampleTime = millis();
 
-    float curPitch = 0.0f;
-    float curRoll = 0.0f;
-    float curYaw = 0.0f;
-    float curAx = 0.0f;
-    float curAy = 0.0f;
-    float curAz = 9.8f;
-    uint8_t curStatus = 0;
-
-    if (imu.isDetected) {
-      imu.update();
-      curPitch = imu.pitch;
-      curRoll = imu.roll;
-      curYaw = imu.yaw;
-      curAx = imu.ax;
-      curAy = imu.ay;
-      curAz = imu.az;
-      curStatus = imu.isCalibrated ? 1 : 0;
-    } else {
-      // [MOCK SIMULATION] ระบุชัดเจนว่าเป็น Mock (จำลองการสั่นไหวและมุมเอียงของ Plank)
-      imu.update(); // Keeps background auto-detect active
-      float t = now / 1000.0f;
-      curPitch = sinf(t * 1.2f + (NODE_ID * 0.5f)) * 3.5f;
-      curRoll = cosf(t * 0.8f + (NODE_ID * 0.3f)) * 2.0f;
-      curYaw = sinf(t * 0.2f) * 1.0f;
-      curAx = sinf(t * 1.5f) * 0.1f;
-      curAy = cosf(t * 1.5f) * 0.1f;
-      curAz = 9.8f + sinf(t * 1.2f) * 0.05f;
-      curStatus = 2; // 2 = MOCK DATA
-    }
-
-    if (pImuCharacteristic != nullptr && (bleConnected || pImuCharacteristic->getSubscribedCount() > 0)) {
       ImuPacket pkt;
       pkt.nodeId = NODE_ID;
-      pkt.sequence = ++packetSequence;
-      pkt.timestamp = now;
-      pkt.pitch = (int16_t)(curPitch * 100.0f);
-      pkt.roll = (int16_t)(curRoll * 100.0f);
-      pkt.yaw = (int16_t)(curYaw * 100.0f);
-      pkt.ax = (int16_t)(curAx * 100.0f);
-      pkt.ay = (int16_t)(curAy * 100.0f);
-      pkt.az = (int16_t)(curAz * 100.0f);
-      pkt.status = curStatus;
+      pkt.sequence = sequence;
+      pkt.timestamp = sampleTime;
+      pkt.pitch = (int16_t)(imu.pitch * 100.0f);
+      pkt.roll = (int16_t)(imu.roll * 100.0f);
+      pkt.yaw = (int16_t)(imu.yaw * 100.0f);
+      pkt.ax = (int16_t)(imu.ax * 100.0f);
+      pkt.ay = (int16_t)(imu.ay * 100.0f);
+      pkt.az = (int16_t)(imu.az * 100.0f);
+      pkt.status = imu.isCalibrated ? 1 : 0;
 
       pImuCharacteristic->notify((uint8_t *)&pkt, sizeof(pkt));
+
+      RawImuPacket rawPkt;
+      rawPkt.nodeId = NODE_ID;
+      rawPkt.sequence = sequence;
+      rawPkt.timestamp = sampleTime;
+      rawPkt.ax = imu.rawAx;
+      rawPkt.ay = imu.rawAy;
+      rawPkt.az = imu.rawAz;
+      rawPkt.gx = imu.rawGx;
+      rawPkt.gy = imu.rawGy;
+      rawPkt.gz = imu.rawGz;
+      rawPkt.marker = RAW_IMU_PACKET_MARKER | (imu.isCalibrated ? 1 : 0);
+      pImuCharacteristic->notify((uint8_t *)&rawPkt, sizeof(rawPkt));
     }
   }
 
@@ -232,19 +220,18 @@ void loop() {
   if (now - lastSerialPrintTime >= 2000) {
     lastSerialPrintTime = now;
     if (Serial && Serial.availableForWrite() > 64) {
-      float displayPitch =
-          imu.isDetected ? imu.pitch
-                         : (sinf(now / 1000.0f * 1.2f + (NODE_ID * 0.5f)) * 3.5f);
-      float displayRoll =
-          imu.isDetected ? imu.roll
-                         : (cosf(now / 1000.0f * 0.8f + (NODE_ID * 0.3f)) * 2.0f);
       size_t subs = pImuCharacteristic ? pImuCharacteristic->getSubscribedCount() : 0;
       uint16_t hdl = pImuCharacteristic ? pImuCharacteristic->getHandle() : 0;
-      Serial.printf(
-          "📊 [Node #%d]%s Pitch: %5.1f° | Roll: %5.1f° | BLE: %s (Subs: %u, hdl: %u) | Seq: %u\n",
-          NODE_ID, imu.isDetected ? " [REAL IMU]" : " [MOCK SIMULATOR]",
-          displayPitch, displayRoll, bleConnected ? "CONNECTED" : "ADVERTISING",
-          (unsigned int)subs, (unsigned int)hdl, packetSequence);
+      if (imu.isDetected) {
+        Serial.printf(
+            "📊 [Node #%d][REAL IMU] Pitch: %5.1f° | Roll: %5.1f° | BLE: %s (Subs: %u, hdl: %u) | Seq: %u\n",
+            NODE_ID, imu.pitch, imu.roll,
+            bleConnected ? "CONNECTED" : "ADVERTISING",
+            (unsigned int)subs, (unsigned int)hdl, packetSequence);
+      } else {
+        Serial.printf("⚠️ [Node #%d] MPU-6050 unavailable; waiting for real sensor | BLE: %s\n",
+                      NODE_ID, bleConnected ? "CONNECTED" : "ADVERTISING");
+      }
     }
   }
 }
@@ -254,10 +241,16 @@ void loop() {
 // ----------------------------- ROLE: GATEWAY
 // ----------------------------------
 // ==============================================================================
+#include <Preferences.h>
+#include <WebServer.h>
 #include <NimBLEDevice.h>
 #include <PubSubClient.h>
 #include <WiFi.h>
+#include <esp_random.h>
 #include <esp_wifi.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/portmacro.h>
+#include "dataset_page.h"
 
 // Wi-Fi Configuration
 const char *WIFI_SSID = "APISIT164 @2.4G";
@@ -275,11 +268,14 @@ WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
 
 // Static IP Configuration
-IPAddress STATIC_IP(192, 168, 1, 200);
+IPAddress STATIC_IP(192, 168, 1, 4);
 IPAddress GATEWAY_IP(192, 168, 1, 1);
 IPAddress SUBNET_MASK(255, 255, 255, 0);
 IPAddress DNS_PRIMARY(192, 168, 1, 1);
 IPAddress DNS_SECONDARY(8, 8, 8, 8);
+
+WebServer webServer(80);
+Preferences nodeConfigPreferences;
 
 // 16-Pad GPIO Hardware Configuration (ESP32-C3 Safe Pins)
 struct PadConfig {
@@ -312,6 +308,44 @@ NimBLEClient *pNodeClients[MAX_NODES] = {nullptr, nullptr, nullptr, nullptr};
 NimBLEAdvertisedDevice *pendingConnectDevices[MAX_NODES] = {nullptr, nullptr,
                                                             nullptr, nullptr};
 
+const size_t DATASET_HISTORY_CAPACITY = 256;
+const size_t DATASET_BATCH_LIMIT = 16;
+struct DatasetSample {
+  uint32_t timestamp;
+  uint16_t sequence;
+  int16_t rawAx, rawAy, rawAz;
+  int16_t rawGx, rawGy, rawGz;
+  int16_t pitch, roll, yaw;
+  int16_t ax, ay, az;
+  uint8_t status;
+  bool telemetryValid;
+};
+
+struct NodeDatasetHistory {
+  DatasetSample samples[DATASET_HISTORY_CAPACITY];
+  size_t nextIndex;
+  size_t count;
+  uint32_t bootId;
+};
+
+NodeDatasetHistory datasetHistory[MAX_NODES] = {};
+portMUX_TYPE datasetMux = portMUX_INITIALIZER_UNLOCKED;
+char nodeSensorUids[MAX_NODES][20] = {};
+uint32_t gatewayBootId = 0;
+
+struct NodeConfig {
+  char name[32];
+  char mountSite[20];
+  char bodyPart[20];
+  char side[8];
+};
+
+NodeConfig nodeConfigs[MAX_NODES] = {
+    {"Node 1 - Neck", "neck", "neck", "unknown"},
+    {"Node 2 - Back", "lumbar", "back", "unknown"},
+    {"Node 3", "other", "other", "unknown"},
+    {"Node 4", "other", "other", "unknown"}};
+
 unsigned long lastMqttStreamTime = 0;
 const unsigned long MQTT_STREAM_INTERVAL_MS = 250; // 4Hz MQTT Stream (reliable, adheres to cloud broker limits)
 unsigned long lastMqttReconnectAttempt = 0;
@@ -325,6 +359,11 @@ void sendPadPressEvent(const char *sensorId);
 void publishImuStream();
 void maintainMqttConnection();
 void resumeBleScanIfNeeded(bool forceRestart = false);
+void handleNodesApi();
+void handleNodeConfigApi();
+void handleSamplesApi();
+void loadNodeConfigs();
+void setupDatasetServer();
 
 // BLE Client Callbacks
 class GatewayClientCallbacks : public NimBLEClientCallbacks {
@@ -333,10 +372,21 @@ public:
   GatewayClientCallbacks(uint8_t id) : nodeId(id) {}
 
   void onConnect(NimBLEClient *pClient) override {
+    const int idx = nodeId - 1;
+    String uid = pClient->getPeerAddress().toString().c_str();
+    uid.replace(":", "");
+    uid.toLowerCase();
+    uid.toCharArray(nodeSensorUids[idx], sizeof(nodeSensorUids[idx]));
+    portENTER_CRITICAL(&datasetMux);
+    datasetHistory[idx].nextIndex = 0;
+    datasetHistory[idx].count = 0;
+    datasetHistory[idx].bootId = esp_random();
+    if (datasetHistory[idx].bootId == 0) datasetHistory[idx].bootId = 1;
+    portEXIT_CRITICAL(&datasetMux);
     Serial.printf("✅ [GATEWAY-BLE] Connected to IMU Node #%d [%s]\n",
                   nodeId, pClient->getPeerAddress().toString().c_str());
-    nodesTelemetry[nodeId - 1].connected = true;
-    nodesTelemetry[nodeId - 1].lastReceivedMillis = millis();
+    nodesTelemetry[idx].connected = true;
+    nodesTelemetry[idx].lastReceivedMillis = millis();
   }
 
   void onDisconnect(NimBLEClient *pClient) override {
@@ -371,6 +421,46 @@ void notifyCallback(NimBLERemoteCharacteristic *pRemoteChar, uint8_t *pData,
     return;
   }
 
+  // Raw six-axis notification used only by the local Dataset recorder.
+  if (length == sizeof(RawImuPacket) &&
+      (pData[sizeof(RawImuPacket) - 1] & RAW_IMU_PACKET_MARKER_MASK) == RAW_IMU_PACKET_MARKER) {
+    const RawImuPacket *raw = (const RawImuPacket *)pData;
+    if (raw->nodeId < 1 || raw->nodeId > MAX_NODES) return;
+    const int idx = raw->nodeId - 1;
+    DatasetSample sample = {};
+    sample.timestamp = raw->timestamp;
+    sample.sequence = raw->sequence;
+    sample.rawAx = raw->ax;
+    sample.rawAy = raw->ay;
+    sample.rawAz = raw->az;
+    sample.rawGx = raw->gx;
+    sample.rawGy = raw->gy;
+    sample.rawGz = raw->gz;
+    sample.status = raw->marker & 1;
+    if (nodesTelemetry[idx].lastSequence == raw->sequence) {
+      sample.telemetryValid = true;
+      sample.pitch = (int16_t)roundf(nodesTelemetry[idx].pitch * 100.0f);
+      sample.roll = (int16_t)roundf(nodesTelemetry[idx].roll * 100.0f);
+      sample.yaw = (int16_t)roundf(nodesTelemetry[idx].yaw * 100.0f);
+      sample.ax = (int16_t)roundf(nodesTelemetry[idx].ax * 100.0f);
+      sample.ay = (int16_t)roundf(nodesTelemetry[idx].ay * 100.0f);
+      sample.az = (int16_t)roundf(nodesTelemetry[idx].az * 100.0f);
+    }
+    portENTER_CRITICAL(&datasetMux);
+    NodeDatasetHistory &history = datasetHistory[idx];
+    history.samples[history.nextIndex] = sample;
+    history.nextIndex = (history.nextIndex + 1) % DATASET_HISTORY_CAPACITY;
+    if (history.count < DATASET_HISTORY_CAPACITY) ++history.count;
+    portEXIT_CRITICAL(&datasetMux);
+    return;
+  }
+
+  if (length != sizeof(ImuPacket)) {
+    Serial.printf("⚠️ [GW-NOTIFY-LEN] Unexpected packet: %u bytes (expected %u)\n",
+                  (unsigned int)length, (unsigned int)sizeof(ImuPacket));
+    return;
+  }
+
   const ImuPacket *pkt = (const ImuPacket *)pData;
   if (pkt->nodeId < 1 || pkt->nodeId > MAX_NODES)
     return;
@@ -378,18 +468,31 @@ void notifyCallback(NimBLERemoteCharacteristic *pRemoteChar, uint8_t *pData,
   int idx = pkt->nodeId - 1;
   NodeTelemetry &telemetry = nodesTelemetry[idx];
 
+  const bool sequenceWrapped = telemetry.lastSequence > 60000 && pkt->sequence < 100;
+  if (sequenceWrapped) {
+    portENTER_CRITICAL(&datasetMux);
+    datasetHistory[idx].nextIndex = 0;
+    datasetHistory[idx].count = 0;
+    datasetHistory[idx].bootId = esp_random();
+    if (datasetHistory[idx].bootId == 0) datasetHistory[idx].bootId = 1;
+    portEXIT_CRITICAL(&datasetMux);
+    telemetry.lastSequence = 0;
+  }
+
   if (telemetry.lastSequence == 0) {
     Serial.printf("🎉 [GW-RECV] First packet from Node #%d received! Seq: %u\n", pkt->nodeId, pkt->sequence);
   }
 
   // Check packet drop sequence
-  if (telemetry.lastSequence != 0 &&
-      pkt->sequence > telemetry.lastSequence + 1) {
-    uint16_t dropped = (pkt->sequence - telemetry.lastSequence - 1);
-    telemetry.totalDropped += dropped;
-    Serial.printf(
-        "⚠️ [GATEWAY-BLE] Node #%d Dropped %u packets (Seq: %u -> %u)\n",
-        pkt->nodeId, dropped, telemetry.lastSequence, pkt->sequence);
+  if (telemetry.lastSequence != 0) {
+    const uint16_t sequenceDelta = static_cast<uint16_t>(pkt->sequence - telemetry.lastSequence);
+    if (sequenceDelta > 1 && sequenceDelta < 0x8000) {
+      const uint16_t dropped = sequenceDelta - 1;
+      telemetry.totalDropped += dropped;
+      Serial.printf(
+          "⚠️ [GATEWAY-BLE] Node #%d Dropped %u packets (Seq: %u -> %u)\n",
+          pkt->nodeId, dropped, telemetry.lastSequence, pkt->sequence);
+    }
   }
   telemetry.lastSequence = pkt->sequence;
   telemetry.lastTimestamp = pkt->timestamp;
@@ -785,6 +888,254 @@ void handleSerialSimulator() {
   }
 }
 
+bool isAllowedConfigValue(const String &value, const char *const allowed[],
+                          size_t count) {
+  for (size_t i = 0; i < count; ++i) {
+    if (value == allowed[i]) return true;
+  }
+  return false;
+}
+
+void loadNodeConfigs() {
+  static const char *const sites[] = {"wrist", "neck", "chest", "upper_back",
+                                      "lumbar", "pelvis", "head", "other"};
+  static const char *const bodyParts[] = {"neck", "back", "wrist", "chest", "other"};
+  static const char *const sides[] = {"unknown", "left", "right"};
+  nodeConfigPreferences.begin("node_cfg", true);
+  for (int i = 0; i < MAX_NODES; ++i) {
+    char key[16];
+    snprintf(key, sizeof(key), "name%d", i + 1);
+    String name = nodeConfigPreferences.getString(key, nodeConfigs[i].name);
+    if (name.length() > 0) name.toCharArray(nodeConfigs[i].name, sizeof(nodeConfigs[i].name));
+
+    snprintf(key, sizeof(key), "site%d", i + 1);
+    String site = nodeConfigPreferences.getString(key, nodeConfigs[i].mountSite);
+    if (isAllowedConfigValue(site, sites, sizeof(sites) / sizeof(sites[0])))
+      site.toCharArray(nodeConfigs[i].mountSite, sizeof(nodeConfigs[i].mountSite));
+
+    snprintf(key, sizeof(key), "body%d", i + 1);
+    String body = nodeConfigPreferences.getString(key, nodeConfigs[i].bodyPart);
+    if (isAllowedConfigValue(body, bodyParts, sizeof(bodyParts) / sizeof(bodyParts[0])))
+      body.toCharArray(nodeConfigs[i].bodyPart, sizeof(nodeConfigs[i].bodyPart));
+
+    snprintf(key, sizeof(key), "side%d", i + 1);
+    String side = nodeConfigPreferences.getString(key, nodeConfigs[i].side);
+    if (isAllowedConfigValue(side, sides, sizeof(sides) / sizeof(sides[0])))
+      side.toCharArray(nodeConfigs[i].side, sizeof(nodeConfigs[i].side));
+  }
+  nodeConfigPreferences.end();
+}
+
+void handleNodesApi() {
+  JsonDocument doc;
+  doc["ip"] = WiFi.localIP().toString();
+  doc["uptime_ms"] = millis();
+  doc["mqtt"] = mqttClient.connected();
+  JsonArray list = doc["nodes"].to<JsonArray>();
+  int connectedCount = 0;
+  for (int i = 0; i < MAX_NODES; ++i) {
+    const uint32_t lastReceived = nodesTelemetry[i].lastReceivedMillis;
+    const bool hasData = lastReceived > 0 && millis() - lastReceived < STALE_TIMEOUT_MS;
+    uint32_t bootId;
+    portENTER_CRITICAL(&datasetMux);
+    bootId = datasetHistory[i].bootId;
+    portEXIT_CRITICAL(&datasetMux);
+    if (nodesTelemetry[i].connected) ++connectedCount;
+    JsonObject node = list.add<JsonObject>();
+    node["nodeId"] = i + 1;
+    node["name"] = nodeConfigs[i].name;
+    node["mount_site"] = nodeConfigs[i].mountSite;
+    node["body_part"] = nodeConfigs[i].bodyPart;
+    node["side"] = nodeConfigs[i].side;
+    node["sensor_uid"] = nodeSensorUids[i];
+    node["connected"] = nodesTelemetry[i].connected;
+    node["hasData"] = hasData;
+    node["latest_seq"] = nodesTelemetry[i].lastSequence;
+    node["total_dropped"] = nodesTelemetry[i].totalDropped;
+    node["boot_id"] = bootId;
+  }
+  doc["connectedNodes"] = connectedCount;
+  String output;
+  serializeJson(doc, output);
+  webServer.send(200, "application/json", output);
+}
+
+void handleNodeConfigApi() {
+  static const char *const sites[] = {"wrist", "neck", "chest", "upper_back",
+                                      "lumbar", "pelvis", "head", "other"};
+  static const char *const bodyParts[] = {"neck", "back", "wrist", "chest", "other"};
+  static const char *const sides[] = {"unknown", "left", "right"};
+  if (!webServer.hasArg("node_id")) {
+    webServer.send(400, "application/json", "{\"message\":\"node_id is required\"}");
+    return;
+  }
+  const int nodeId = webServer.arg("node_id").toInt();
+  if (nodeId < 1 || nodeId > MAX_NODES) {
+    webServer.send(400, "application/json", "{\"message\":\"node_id must be 1..4\"}");
+    return;
+  }
+  const String name = webServer.arg("name");
+  const String site = webServer.arg("mount_site");
+  const String body = webServer.arg("body_part");
+  const String side = webServer.arg("side");
+  if (name.length() == 0 || name.length() >= sizeof(nodeConfigs[0].name) ||
+      !isAllowedConfigValue(site, sites, sizeof(sites) / sizeof(sites[0])) ||
+      !isAllowedConfigValue(body, bodyParts, sizeof(bodyParts) / sizeof(bodyParts[0])) ||
+      !isAllowedConfigValue(side, sides, sizeof(sides) / sizeof(sides[0]))) {
+    webServer.send(400, "application/json", "{\"message\":\"invalid node configuration\"}");
+    return;
+  }
+
+  char nameKey[16], siteKey[16], bodyKey[16], sideKey[16];
+  snprintf(nameKey, sizeof(nameKey), "name%d", nodeId);
+  snprintf(siteKey, sizeof(siteKey), "site%d", nodeId);
+  snprintf(bodyKey, sizeof(bodyKey), "body%d", nodeId);
+  snprintf(sideKey, sizeof(sideKey), "side%d", nodeId);
+  nodeConfigPreferences.begin("node_cfg", false);
+  const size_t savedName = nodeConfigPreferences.putString(nameKey, name);
+  const size_t savedSite = nodeConfigPreferences.putString(siteKey, site);
+  const size_t savedBody = nodeConfigPreferences.putString(bodyKey, body);
+  const size_t savedSide = nodeConfigPreferences.putString(sideKey, side);
+  nodeConfigPreferences.end();
+  if (savedName == 0 || savedSite == 0 || savedBody == 0 || savedSide == 0) {
+    webServer.send(500, "application/json", "{\"message\":\"could not save node configuration\"}");
+    return;
+  }
+
+  name.toCharArray(nodeConfigs[nodeId - 1].name, sizeof(nodeConfigs[nodeId - 1].name));
+  site.toCharArray(nodeConfigs[nodeId - 1].mountSite, sizeof(nodeConfigs[nodeId - 1].mountSite));
+  body.toCharArray(nodeConfigs[nodeId - 1].bodyPart, sizeof(nodeConfigs[nodeId - 1].bodyPart));
+  side.toCharArray(nodeConfigs[nodeId - 1].side, sizeof(nodeConfigs[nodeId - 1].side));
+  webServer.send(200, "application/json", "{\"ok\":true}");
+}
+
+bool isSequenceAfter(uint16_t sequence, uint16_t afterSequence) {
+  return static_cast<int16_t>(sequence - afterSequence) > 0;
+}
+
+void handleSamplesApi() {
+  static DatasetSample snapshot[MAX_NODES][DATASET_BATCH_LIMIT];
+  static size_t snapshotCount[MAX_NODES] = {};
+  static uint32_t snapshotBootId[MAX_NODES] = {};
+  static bool snapshotOverflow[MAX_NODES] = {};
+
+  portENTER_CRITICAL(&datasetMux);
+  for (int i = 0; i < MAX_NODES; ++i) {
+    const NodeDatasetHistory &history = datasetHistory[i];
+    snapshotCount[i] = history.count < DATASET_BATCH_LIMIT
+                           ? history.count
+                           : DATASET_BATCH_LIMIT;
+    snapshotOverflow[i] = history.count > DATASET_BATCH_LIMIT;
+    snapshotBootId[i] = history.bootId;
+    const size_t oldest = (history.nextIndex + DATASET_HISTORY_CAPACITY -
+                           snapshotCount[i]) % DATASET_HISTORY_CAPACITY;
+    for (size_t j = 0; j < snapshotCount[i]; ++j) {
+      snapshot[i][j] = history.samples[(oldest + j) % DATASET_HISTORY_CAPACITY];
+    }
+  }
+  portEXIT_CRITICAL(&datasetMux);
+
+  JsonDocument doc;
+  doc["gateway_boot_id"] = gatewayBootId;
+  JsonArray nodes = doc["nodes"].to<JsonArray>();
+  const uint32_t now = millis();
+  for (int i = 0; i < MAX_NODES; ++i) {
+    char bootKey[20], sequenceKey[20];
+    snprintf(bootKey, sizeof(bootKey), "n%d_boot_id", i + 1);
+    snprintf(sequenceKey, sizeof(sequenceKey), "n%d_after_seq", i + 1);
+    const bool hasCursor = webServer.hasArg(bootKey) && webServer.hasArg(sequenceKey) &&
+        static_cast<uint32_t>(strtoul(webServer.arg(bootKey).c_str(), nullptr, 10)) == snapshotBootId[i];
+    const uint16_t afterSequence = hasCursor
+        ? static_cast<uint16_t>(strtoul(webServer.arg(sequenceKey).c_str(), nullptr, 10))
+        : 0;
+
+    bool dropped = !hasCursor && snapshotOverflow[i];
+    if (hasCursor && snapshotCount[i] > 0) {
+      const uint16_t expected = static_cast<uint16_t>(afterSequence + 1);
+      bool expectedStillBuffered = false;
+      for (size_t j = 0; j < snapshotCount[i]; ++j) {
+        if (snapshot[i][j].sequence == expected) expectedStillBuffered = true;
+      }
+      dropped = isSequenceAfter(snapshot[i][snapshotCount[i] - 1].sequence, afterSequence) &&
+                !expectedStillBuffered;
+    }
+
+    JsonObject node = nodes.add<JsonObject>();
+    const uint32_t lastReceived = nodesTelemetry[i].lastReceivedMillis;
+    node["nodeId"] = i + 1;
+    node["name"] = nodeConfigs[i].name;
+    node["mount_site"] = nodeConfigs[i].mountSite;
+    node["body_part"] = nodeConfigs[i].bodyPart;
+    node["side"] = nodeConfigs[i].side;
+    node["sensor_uid"] = nodeSensorUids[i];
+    node["connected"] = nodesTelemetry[i].connected;
+    node["hasData"] = lastReceived > 0 && now - lastReceived < STALE_TIMEOUT_MS;
+    node["boot_id"] = snapshotBootId[i];
+    node["latest_seq"] = snapshotCount[i] ? snapshot[i][snapshotCount[i] - 1].sequence : 0;
+    node["total_dropped"] = nodesTelemetry[i].totalDropped;
+    node["dropped"] = dropped;
+    JsonArray samples = node["samples"].to<JsonArray>();
+    for (size_t j = 0; j < snapshotCount[i]; ++j) {
+      const DatasetSample &source = snapshot[i][j];
+      if (hasCursor && !isSequenceAfter(source.sequence, afterSequence)) continue;
+      JsonObject sample = samples.add<JsonObject>();
+      sample["sample_ms"] = source.timestamp;
+      sample["seq"] = source.sequence;
+      sample["raw_ax"] = source.rawAx;
+      sample["raw_ay"] = source.rawAy;
+      sample["raw_az"] = source.rawAz;
+      sample["raw_gx"] = source.rawGx;
+      sample["raw_gy"] = source.rawGy;
+      sample["raw_gz"] = source.rawGz;
+      const float rawAxG = source.rawAx / 8192.0f;
+      const float rawAyG = source.rawAy / 8192.0f;
+      const float rawAzG = source.rawAz / 8192.0f;
+      const float accelX = source.telemetryValid ? source.ax / 100.0f : rawAxG * 9.80665f;
+      const float accelY = source.telemetryValid ? source.ay / 100.0f : rawAyG * 9.80665f;
+      const float accelZ = source.telemetryValid ? source.az / 100.0f : rawAzG * 9.80665f;
+      sample["ax"] = accelX;
+      sample["ay"] = accelY;
+      sample["az"] = accelZ;
+      sample["gx"] = (source.rawGx / 65.5f) * 0.01745329252f;
+      sample["gy"] = (source.rawGy / 65.5f) * 0.01745329252f;
+      sample["gz"] = (source.rawGz / 65.5f) * 0.01745329252f;
+      const float accelNormG = sqrtf(accelX * accelX + accelY * accelY + accelZ * accelZ) / 9.80665f;
+      const float gxDps = source.rawGx / 65.5f;
+      const float gyDps = source.rawGy / 65.5f;
+      const float gzDps = source.rawGz / 65.5f;
+      const float gyroNormDps = sqrtf(gxDps * gxDps + gyDps * gyDps + gzDps * gzDps);
+      sample["accel_norm_g"] = accelNormG;
+      sample["gyro_norm_dps"] = gyroNormDps;
+      sample["steady"] = accelNormG >= 0.90f && accelNormG <= 1.10f && gyroNormDps <= 10.0f;
+      sample["roll_deg"] = source.roll / 100.0f;
+      sample["pitch_deg"] = source.pitch / 100.0f;
+      sample["yaw_deg"] = source.yaw / 100.0f;
+      sample["angle_valid"] = source.telemetryValid;
+      sample["calibrated"] = source.status == 1;
+      sample["valid"] = true;
+      sample["status"] = source.status == 1 ? "real_calibrated" : "real_uncalibrated";
+    }
+  }
+  String output;
+  serializeJson(doc, output);
+  webServer.send(200, "application/json", output);
+}
+
+void setupDatasetServer() {
+  webServer.on("/", HTTP_GET, []() {
+    webServer.send_P(200, "text/html; charset=utf-8", DATASET_PAGE);
+  });
+  webServer.on("/api/nodes", HTTP_GET, handleNodesApi);
+  webServer.on("/api/node-config", HTTP_POST, handleNodeConfigApi);
+  webServer.on("/samples", HTTP_GET, handleSamplesApi);
+  webServer.onNotFound([]() {
+    webServer.send(404, "application/json", "{\"error\":\"not_found\"}");
+  });
+  webServer.begin();
+  Serial.printf("🌐 [DATASET] Web recorder at http://%s/\n",
+                WiFi.localIP().toString().c_str());
+}
+
 void setup() {
   Serial.begin(115200);
   Serial.setTxTimeoutMs(0);
@@ -799,6 +1150,10 @@ void setup() {
   Serial.println("🌐 [PlanKO GATEWAY] Firmware Initializing...");
   Serial.println(
       "****************************************************************");
+
+  gatewayBootId = esp_random();
+  if (gatewayBootId == 0) gatewayBootId = 1;
+  loadNodeConfigs();
 
   // Initialize Pads
   for (size_t i = 0; i < TOTAL_PADS; i++) {
@@ -865,6 +1220,10 @@ void setup() {
   esp_wifi_set_config(WIFI_IF_STA, &current_conf);
 
   WiFi.setTxPower(WIFI_POWER_8_5dBm); // Low TX power prevents voltage drop on ESP32-C3 DevKit during auth
+  if (!WiFi.config(STATIC_IP, GATEWAY_IP, SUBNET_MASK, DNS_PRIMARY, DNS_SECONDARY)) {
+    Serial.println("⚠️ [WIFI] Static IP configuration failed; DHCP may be used instead.");
+  }
+  Serial.printf("🌐 [WIFI] Requested Gateway IP: %s\n", STATIC_IP.toString().c_str());
   Serial.printf("⏳ [WIFI] Connecting to SSID: '%s'...\n", WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   int attempts = 0;
@@ -888,6 +1247,7 @@ void setup() {
 
   Serial.printf("🎉 Wi-Fi Connected! IP: %s\n",
                 WiFi.localIP().toString().c_str());
+  setupDatasetServer();
 
   // Initialize MQTT Client
   snprintf(mqttClientId, sizeof(mqttClientId), "PlanKO_GW_%08X",
@@ -933,6 +1293,7 @@ void loop() {
   if (mqttClient.connected()) {
     mqttClient.loop();
   }
+  webServer.handleClient();
   handlePadInputs();
   handleSerialSimulator();
 

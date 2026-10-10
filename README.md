@@ -1,44 +1,54 @@
-# โครงการเชื่อมต่อ Wi-Fi สำหรับ ESP32 ผ่านบลูทูธ (ESP32 BLE to Wi-Fi Configuration)
+# PlanKO Gateway and IMU Nodes
 
-โปรเจกต์นี้เป็นการสาธิตวิธีการตั้งค่าเครือข่าย Wi-Fi ให้กับบอร์ด ESP32 ผ่านเทคโนโลยี Bluetooth Low Energy (BLE)โดยใช้หน้าเว็บเบราว์เซอร์ (ผ่าน Web Bluetooth API) เป็นตัวส่งข้อมูลรหัสผ่านและชื่อเครือข่าย (SSID) ไปให้บอร์ด ESP32 ทำการเชื่อมต่อโดยอัตโนมัติ
+PlatformIO project for an ESP32-C3 Gateway and up to four ESP32-C3 IMU Nodes.
+The Gateway receives sensor samples over BLE, keeps the MQTT stream for the
+existing app, and serves a local dataset recorder.
 
-## 📁 โครงสร้างโปรเจกต์
+## Firmware roles
 
-โปรเจกต์นี้แบ่งออกเป็น 2 ส่วนหลัก:
+Open `Code/` with PlatformIO and select the matching environment:
 
-- **`Code/`**: โค้ดฝั่งไมโครคอนโทรลเลอร์รันบนบอร์ด ESP32 (พัฒนาผ่าน PlatformIO ด้วย C++/Arduino Framework) ทำหน้าที่เป็น BLE Server เพื่อรอรับข้อมูล SSID และรหัสผ่าน
-- **`WEB/`**: ฝั่งผู้ใช้งาน (Client) เป็นหน้าเว็บหน้าเดียว (HTML + JavaScript) ที่ใช้ Web Bluetooth สำหรับค้นหา, เชื่อมต่อ, และส่งข้อมูลการตั้งค่าไปยัง ESP32 ควบคุมผ่านหน้าจอมือถือหรือคอมพิวเตอร์ได้เลย
+- `gateway`: BLE Central, Wi-Fi Station, MQTT publisher, pad inputs, and the
+  dataset recorder at `http://192.168.1.4/`.
+- `imu_node_1` through `imu_node_4`: BLE Peripheral with a real MPU-6050 sensor.
+  Connect SDA to GPIO 8 and SCL to GPIO 9. A missing sensor is reported as
+  unavailable; the Node does not generate mock measurements.
 
-## 🛠 ข้อมูลจำเพาะของ BLE Profile
+The Gateway can connect to four Nodes at once. The recorder shows each Node's
+connection and sensor identity. Configure its display name and body location in
+the page; the defaults are Node 1 at the neck and Node 2 at the back/lumbar.
 
-ESP32 ได้ทำการจำลองตัวเองเป็นอุปกรณ์ดังนี้:
-- **Device Name**: `ESP32_Config`
-- **Service UUID**: `12345678-1234-1234-1234-1234567890ab`
-- **Characteristic UUID**: `abcd1234-5678-1234-5678-abcdef123456`
-- **รูปแบบ Format ข้อมูลที่ส่ง**: `SSID,PASSWORD` (คั่นระหว่างชื่อและรหัสด้วยเครื่องหมายจุลภาค)
+## Dataset capture
 
-## 🚀 การติดตั้งและวิธีการใช้งาน
+1. Connect the Gateway to the Wi-Fi network that uses the `192.168.1.x`
+   subnet, then open `http://192.168.1.4/` on a device on that network.
+2. Connect one or more Nodes and set the subject, session, trial, action, and
+   each Node's body location.
+3. Start capture. The page records real raw accelerometer and gyroscope samples
+   from all connected Nodes into separate in-browser datasets. The guided phase
+   sequence can be edited; manual phase buttons are available when guided mode
+   is off.
+4. Stop capture, review the phase boundaries and review checkboxes, then confirm
+   to create one CSV download link per Node.
 
-### 1. ส่วนของบอร์ด ESP32 (โฟลเดอร์ `Code`)
-1. เปิดโปรแกรม VS Code และเตรียมปลั๊กอิน **PlatformIO** ให้พร้อม
-2. เลือกแถบเมนู Open Folder และเลือกเข้าไปที่โฟลเดอร์ `Code`
-3. เชื่อมต่อบอร์ด ESP32 เข้ากับคอมพิวเตอร์ของคุณ
-4. กดปุ่ม **Build** และปุ่ม **Upload** เพื่อเบิร์นโปรแกรมลงบอร์ด
-5. เปิดหน้าต่าง **Serial Monitor** (ตั้งค่า Baud Rate ไว้ที่ `115200`) จะมีข้อความแสดงว่า `🚀 ESP32 Started` และพร้อมส่งสัญญาณโฆษณา (Advertising) เพื่อรอ Client 
+Capture data remains in the browser page's memory until the CSV files are
+downloaded. The Gateway holds 256 samples per Node (about 12.8 seconds at 20 Hz)
+in a rolling buffer for the page.
 
-### 2. ส่วนของหน้าเว็บแอปพลิเคชัน (โฟลเดอร์ `WEB`)
-1. หากต้องการแก้ไขและตั้งค่าข้อมูล Wi-Fi ล่วงหน้าให้เข้าไปแก้ไขไฟล์ `index.js` บรรทัดที่ 35
-   ```javascript
-   const value = "ชื่อSSIDที่คุณต้องการ,รหัสผ่านWiFi"; 
-   ```
-2. รันหน้าเว็บ `index.html` 
-   > **ข้อควรระวังสำคัญ:** การใช้งาน Web Bluetooth API เบราว์เซอร์มักจะบังคับเรื่องความปลอดภัย ดังนั้นแนะนำให้รันเว็บผ่าน **Local Web Server** (เช่น ปลั๊กอิน Live Server ใน VS Code) มากกว่าการเปิดไฟล์แบบ `file:///...` โดยตรง เพื่อให้ API ทำงานได้สมบูรณ์ เบราว์เซอร์ควรรองรับ Web Bluetooth (อาทิ Google Chrome, Microsoft Edge, หรือเบราว์เซอร์บน Android)
-3. เมื่อเปิดหน้าเว็บแล้ว ให้กดปุ่ม **`Connect ESP32 BT`** เบราว์เซอร์จะเด้งหน้าต่างให้เลือกจับคู่อุปกรณ์
-4. เลือกอุปกรณ์ชื่อ `ESP32_Config` 
-5. จากนั้นรอสักครู่และกดปุ่ม **`Send WiFi`** ข้อมูล SSID และ Password จะถูกเข้ารหัสแล้วส่งยิงเข้าไปที่ ESP32
-6. หันไปดูหน้าต่าง **Serial Monitor** เพื่อเช็คผลการเชื่อมต่อ Wi-Fi ที่ ESP32 ได้รับ หากสำเร็จจะได้ข้อความว่า `✅ Connected!` และบอกหมายเลข IP
+## MQTT
 
-## ⚙️ อุปกรณ์และซอฟต์แวร์ที่แนะนำ
-- แผงวงจรไมโครคอนโทรลเลอร์ **ESP32**
-- โปรแกรม **VS Code + PlatformIO**
-- เว็บเบราว์เซอร์ **Google Chrome แนะนำเวอร์ชันล่าสุด**
+The Gateway continues to publish the existing consolidated stream to
+`planko/imu`, pad presses to `planko/pad`, and online status to `planko/status`.
+The additional raw IMU BLE notification is consumed by the local recorder; it
+does not change the MQTT stream schema.
+
+## Hardware and setup
+
+- ESP32-C3 DevKitM-1 / SuperMini for the Gateway and each Node
+- MPU-6050 on each Node (I2C address `0x68`, SDA GPIO 8, SCL GPIO 9)
+- VS Code with PlatformIO
+- Wi-Fi access point on the `192.168.1.x` subnet; reserve `192.168.1.4` for the
+  Gateway to avoid an address conflict
+
+Wi-Fi credentials and MQTT broker settings are configured in
+`Code/src/main.cpp`. Build and upload each board using its PlatformIO role.

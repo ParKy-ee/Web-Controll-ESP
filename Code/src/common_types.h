@@ -7,8 +7,8 @@
 #define PLANKO_SERVICE_UUID        "4E6F6465-0001-1000-8000-00805F9B34FB"
 #define PLANKO_CHARACTERISTIC_UUID "4E6F6465-0002-1000-8000-00805F9B34FB"
 
-// Compact 20-byte Binary Packet for ultra-fast BLE transmission
-// Fits comfortably within standard 23-byte BLE MTU without negotiation
+// Compact telemetry packet retained for the existing MQTT stream.
+// It fits the default 23-byte ATT MTU without negotiation.
 struct __attribute__((packed)) ImuPacket {
     uint8_t  nodeId;       // Node ID (1 - 4)
     uint16_t sequence;     // Packet Sequence number (for packet loss tracking)
@@ -21,6 +21,27 @@ struct __attribute__((packed)) ImuPacket {
     int16_t  az;           // Accel Z (m/s^2 * 100)
     uint8_t  status;       // 1 = Calibrated/OK, 0 = Uncalibrated/Error
 };
+
+// The Gateway also needs the real six-axis readings for Dataset capture.
+// This second notification uses the same 20-byte payload size and is tagged
+// so old telemetry fields and raw sensor counts are never confused.
+#define RAW_IMU_PACKET_MARKER 0xA4
+#define RAW_IMU_PACKET_MARKER_MASK 0xFE
+struct __attribute__((packed)) RawImuPacket {
+    uint8_t  nodeId;
+    uint16_t sequence;
+    uint32_t timestamp;
+    int16_t  ax;            // MPU-6050 raw accelerometer register value
+    int16_t  ay;
+    int16_t  az;
+    int16_t  gx;            // MPU-6050 raw gyroscope register value
+    int16_t  gy;
+    int16_t  gz;
+    uint8_t  marker;        // Marker high bits; low bit carries calibrated status
+};
+
+static_assert(sizeof(ImuPacket) == 20, "ImuPacket must remain 20 bytes");
+static_assert(sizeof(RawImuPacket) == 20, "RawImuPacket must remain 20 bytes");
 
 // Telemetry state stored on Gateway for each node
 struct NodeTelemetry {
