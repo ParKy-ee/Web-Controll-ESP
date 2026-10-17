@@ -40,8 +40,24 @@ struct __attribute__((packed)) RawImuPacket {
     uint8_t  marker;        // Marker high bits; low bit carries calibrated status
 };
 
+// Biomarker packet (Heart Rate, SpO2, Red/IR PPG) for MAX30102 on Node 1
+#define BIO_PACKET_MARKER 0xB4
+#define BIO_PACKET_MARKER_MASK 0xFE
+struct __attribute__((packed)) BioPacket {
+    uint8_t  nodeId;       // Node ID (1)
+    uint16_t sequence;     // Packet Sequence number
+    uint32_t timestamp;    // millis() on node
+    uint16_t bpm;          // Heart rate (BPM * 10, e.g. 720 = 72.0 BPM)
+    uint8_t  spo2;         // SpO2 percentage (e.g. 98 = 98%)
+    uint8_t  finger;       // 1 = finger detected, 0 = no finger
+    uint32_t red;          // Raw Red LED reading
+    uint32_t ir;           // Raw IR LED reading
+    uint8_t  marker;       // BIO_PACKET_MARKER (0xB4)
+};
+
 static_assert(sizeof(ImuPacket) == 20, "ImuPacket must remain 20 bytes");
 static_assert(sizeof(RawImuPacket) == 20, "RawImuPacket must remain 20 bytes");
+static_assert(sizeof(BioPacket) == 20, "BioPacket must remain 20 bytes");
 
 // Telemetry state stored on Gateway for each node
 struct NodeTelemetry {
@@ -56,6 +72,11 @@ struct NodeTelemetry {
     float    ay;
     float    az;
     uint8_t  status;
+    float    bpm;
+    uint8_t  spo2;
+    bool     finger;
+    uint32_t rawRed;
+    uint32_t rawIr;
     volatile unsigned long lastReceivedMillis; // volatile: written by BLE callback task, read by main loop
 };
 
