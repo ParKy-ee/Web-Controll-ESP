@@ -132,8 +132,8 @@ def samples_to_windows(rows: list[dict], window_seconds: float, expected_hz: flo
                             "calibration_id", "calibration_method_version", "sensor_uid",
                             "mount_site", "body_part", "side"))
             gap = float(row["device_time_s"]) - float(prev["device_time_s"])
-            seq_gap = (row.get("seq") is not None and prev.get("seq") is not None
-                       and int(row["seq"]) != int(prev["seq"]) + 1)
+            seq_delta = (int(row["seq"]) - int(prev["seq"])) if (row.get("seq") is not None and prev.get("seq") is not None) else 1
+            seq_gap = (seq_delta <= 0 or seq_delta > 10)
             if boundary or seq_gap or row.get("gap_before") in (True, "true", 1, "1") or gap <= 0 or gap > gap_reset_seconds:
                 current = []
         current.append(row)

@@ -773,9 +773,14 @@
     const guidedProgressBar = $("guidedProgressBar");
     const guidedText = $("guidedText");
 
+    let lastRecordedSeq = null;
+    let lastRecordedTs = null;
+
     recStartBtn.addEventListener("click", () => {
       isRecording = true;
       recordedSamples = [];
+      lastRecordedSeq = null;
+      lastRecordedTs = null;
       recordStartTime = Date.now();
       recStartBtn.disabled = true;
       recStopBtn.disabled = false;
@@ -955,13 +960,24 @@
     // -------------------------------------------------------------
     // MQTT CONNECTION LOGIC
     // -------------------------------------------------------------
+    function onMqttMessageArrived(msg) {
+      if (!isPaused && msg.destinationName === "planko/imu") {
+        handleImuMessage(msg.payloadString);
+      }
+    }
+
     function connectMqtt() {
       const broker = "broker.emqx.io";
       const port = 8084;
       const clientId = "PlanKO_Web_" + Math.random().toString(16).substr(2, 8);
 
+      if (mqttClient) {
+        try { mqttClient.disconnect(); } catch (e) {}
+      }
+
       setMqttStatus("connecting", "กำลังเชื่อมต่อ broker.emqx.io:8084...");
       mqttClient = new Paho.MQTT.Client(broker, port, "/mqtt", clientId);
+      mqttClient.onMessageArrived = onMqttMessageArrived;
 
       const options = {
         useSSL: true,
@@ -990,7 +1006,11 @@
 
     function fallbackToWs(clientId) {
       setMqttStatus("connecting", "ลองเชื่อมต่อผ่านพอร์ต 8083 (WS)...");
+      if (mqttClient) {
+        try { mqttClient.disconnect(); } catch (e) {}
+      }
       mqttClient = new Paho.MQTT.Client("broker.emqx.io", 8083, "/mqtt", clientId);
+      mqttClient.onMessageArrived = onMqttMessageArrived;
       mqttClient.connect({
         useSSL: false,
         timeout: 6,
@@ -1078,6 +1098,16 @@
 
             // Accumulate Dataset Sample if recording
             if (isRecording) {
+              const curSeq = Number(node.seq || 0);
+              const curTs = Number(node.ts || 0);
+
+              // Filter out duplicate packets from MQTT/reconnect
+              if (lastRecordedSeq !== null && curSeq === lastRecordedSeq && curTs === lastRecordedTs) {
+                return;
+              }
+              lastRecordedSeq = curSeq;
+              lastRecordedTs = curTs;
+
               const sample = {
                 sensor_uid: `node_${node.nodeId}`,
                 mount_site: recSiteSelect.value,
@@ -1298,17 +1328,6 @@
     // Start 3D Loop & MQTT Connection
     requestAnimationFrame(drawScene);
     connectMqtt();
-
-    // Hook MQTT Message Arrived
-    setInterval(() => {
-      if (mqttClient && mqttClient.isConnected()) {
-        mqttClient.onMessageArrived = (msg) => {
-          if (!isPaused && msg.destinationName === "planko/imu") {
-            handleImuMessage(msg.payloadString);
-          }
-        };
-      }
-    }, 500);
   </script>
 </body>
 </html>

@@ -85,7 +85,7 @@ def read_recording(path: Path, config: dict) -> list[dict]:
             host_time = float(raw.get("host_time_s") or raw.get("host_timestamp_s") or index / config["sampling_hz"])
         except (TypeError, ValueError):
             continue
-        if previous_seq is not None and (seq <= previous_seq or boot_ms < previous_boot):
+        if previous_seq is not None and (seq < previous_seq or boot_ms < previous_boot):
             epoch += 1
         previous_seq, previous_boot = seq, boot_ms
         # Keep arrival order; a reboot begins a new stream epoch and cannot be
@@ -298,6 +298,13 @@ def main():
     stage_labels = sorted({row["phase_label"] for row in stage_windows})
     if not action_windows:
         print("No eligible action windows after calibration and boundary filtering.", file=sys.stderr)
+        return 2
+
+    if len(action_labels) < 2:
+        print(f"❌ ไม่สามารถเทรนโมเดลจำแนกท่าได้: พบท่าทาง (action_label) เพียง {len(action_labels)} ท่า คือ {action_labels}", file=sys.stderr)
+        print("💡 การเทรนโมเดล AI (Classification) จำเป็นต้องมีอย่างน้อย 2 ท่าขึ้นไป เพื่อให้ AI เปรียบเทียบและแยกแยะได้", file=sys.stderr)
+        print("   เช่น ต้องมีไฟล์ท่า lumbar_neutral (หลังตรง) และ lumbar_flexion (ก้มหลัง) ร่วมกัน", file=sys.stderr)
+        print(f"   (จำนวนหน้าต่างเวลาที่สกัดได้จากไฟล์นี้: {len(action_windows)} windows, จังหวะ phase: {stage_labels})", file=sys.stderr)
         return 2
 
     evaluations = {}
