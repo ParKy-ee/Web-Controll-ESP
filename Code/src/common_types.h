@@ -55,6 +55,9 @@ struct NodeTelemetry {
     float    ax;
     float    ay;
     float    az;
+    float    gx;
+    float    gy;
+    float    gz;
     uint8_t  status;
     volatile unsigned long lastReceivedMillis; // volatile: written by BLE callback task, read by main loop
 };
