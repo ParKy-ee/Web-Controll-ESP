@@ -25,7 +25,6 @@
 #include <Wire.h>
 #include <stdlib.h>
 
-
 #if defined(ROLE_NODE)
 // ==============================================================================
 // ------------------------------ ROLE: IMU NODE
@@ -129,6 +128,11 @@ void setup() {
   if (!imu.begin(I2C_SDA_PIN, I2C_SCL_PIN)) {
     NODE_LOGLN("❌ [IMU] MPU-6050 not detected. Retrying in background...");
   }
+
+#if (NODE_ID == 1)
+  // 1.1 Initialize MAX30102 Pulse Oximeter on I2C bus (SDA=8, SCL=9)
+  max30102Detected = initMax30102();
+#endif
 
   // 2. Initialize NimBLE Peripheral
   char bleName[20];
@@ -236,6 +240,105 @@ void loop() {
     }
   }
 
+#if (NODE_ID == 1)
+  // Background retry if MAX30102 was not ready at boot
+  static unsigned long lastMaxRetryTime = 0;
+  if (!max30102Detected && (now - lastMaxRetryTime >= 2000)) {
+    lastMaxRetryTime = now;
+    max30102Detected = initMax30102();
+  }
+
+  // Read MAX30102 sensor and process pulse oximetry
+  if (max30102Detected) {
+    max30102.check();
+    while (max30102.available()) {
+      currentRed = max30102.getFIFORed();
+      currentIr = max30102.getFIFOIR();
+      max30102.nextSample();
+    }
+
+    // Direct read fallback if FIFO empty
+    if (currentIr == 0) {
+      currentIr = max30102.getIR();
+      currentRed = max30102.getRed();
+    }
+
+    // Finger & Heartbeat detection logic
+    bool noRecentBeat = (lastBeat == 0 || (now - lastBeat > 2500));
+
+    // If IR is low or no heartbeat detected recently, decay values to 0
+    if (currentIr < 50000 || noRecentBeat) {
+      currentBpm = 0.0f;
+      currentSpo2 = 0;
+      if (now - lastBeat > 3000) {
+        currentFinger = false;
+        for (byte x = 0; x < RATE_SIZE; x++)
+          rates[x] = 0;
+        rateSpot = 0;
+        beatAvg = 0.0f;
+      }
+    }
+
+    if (currentIr >= 50000) {
+      if (checkForBeat(currentIr)) {
+        long delta = now - lastBeat;
+        lastBeat = now;
+        if (delta > 270 && delta < 2000) { // Valid HR: 30-220 BPM
+          float beatsPerMinute = 60.0f / (delta / 1000.0f);
+          rates[rateSpot++] = (byte)round(beatsPerMinute);
+          rateSpot %= RATE_SIZE;
+
+          int sum = 0;
+          byte count = 0;
+          for (byte x = 0; x < RATE_SIZE; x++) {
+            if (rates[x] > 0) {
+              sum += rates[x];
+              count++;
+            }
+          }
+
+          // Require at least 2 consecutive rhythmic beats to confirm a real
+          // human finger
+          if (count >= 2) {
+            beatAvg = (float)sum / count;
+            currentBpm = beatAvg;
+            currentFinger = true;
+
+            if (currentIr > 0 && currentRed > 0) {
+              float ratio = (float)currentRed / (float)currentIr;
+              int estimatedSpo2 = (int)(110.0f - 25.0f * ratio);
+              if (estimatedSpo2 > 100)
+                estimatedSpo2 = 100;
+              if (estimatedSpo2 < 85)
+                estimatedSpo2 = 85;
+              currentSpo2 = (uint8_t)estimatedSpo2;
+            }
+          }
+        }
+      }
+    }
+
+    // Transmit BioPacket via BLE Notifications at 4Hz (every 250ms)
+    if (now - lastBioNotifyTime >= BIO_NOTIFY_INTERVAL_MS) {
+      lastBioNotifyTime = now;
+      if (pImuCharacteristic != nullptr &&
+          (bleConnected || pImuCharacteristic->getSubscribedCount() > 0)) {
+        BioPacket bioPkt;
+        bioPkt.nodeId = NODE_ID;
+        bioPkt.sequence = packetSequence;
+        bioPkt.timestamp = now;
+        bioPkt.bpm = (uint16_t)round(currentBpm * 10.0f);
+        bioPkt.spo2 = currentSpo2;
+        bioPkt.finger = currentFinger ? 1 : 0;
+        bioPkt.red = currentRed;
+        bioPkt.ir = currentIr;
+        bioPkt.marker = BIO_PACKET_MARKER;
+        pImuCharacteristic->notify((uint8_t *)&bioPkt, sizeof(bioPkt));
+      }
+    }
+  }
+#endif
+
   // Print telemetry to Serial once every 2 seconds
   if (now - lastSerialPrintTime >= 2000) {
     lastSerialPrintTime = now;
@@ -254,6 +357,19 @@ void loop() {
                       "sensor | BLE: %s\n",
                       NODE_ID, bleConnected ? "CONNECTED" : "ADVERTISING");
       }
+#if (NODE_ID == 1)
+      if (max30102Detected) {
+        Serial.printf("❤️ [Node #%d][MAX30102] IR: %u | Red: %u | BPM: %5.1f | "
+                      "SpO2: %3u%% | Finger: %s\n",
+                      NODE_ID, currentIr, currentRed, currentBpm,
+                      (unsigned int)currentSpo2,
+                      currentFinger ? "DETECTED" : "NO FINGER");
+      } else {
+        Serial.printf("⚠️ [Node #%d][MAX30102] Not responding at 0x57 (Check "
+                      "SDA=8, SCL=9, 3.3V, GND)\n",
+                      NODE_ID);
+      }
+#endif
     }
   }
 }
@@ -274,7 +390,6 @@ void loop() {
 #include <freertos/FreeRTOS.h>
 #include <freertos/portmacro.h>
 
-
 // Wi-Fi Configuration
 const char *WIFI_SSID = "MMm";
 const char *WIFI_PASS = "123456789";
@@ -285,30 +400,53 @@ const uint16_t MQTT_PORT = 1883;
 const char *TOPIC_IMU = "planko/imu";
 const char *TOPIC_PAD = "planko/pad";
 const char *TOPIC_STATUS = "planko/status";
+const char *TOPIC_PRESSURE = "planko/pressure";
+const char *TOPIC_BIO = "planko/bio";
 char mqttClientId[32] = "PlanKO_Gateway_ESP32";
+
+// ==============================================================================
+// RFP-602 Thin-Film Pressure Sensor Configuration
+// ==============================================================================
+#ifndef RFP602_PIN
+#define RFP602_PIN 0 // ADC1_CH0 on ESP32-C3
+#endif
+
+const int RFP602_PRESS_THRESHOLD =
+    300; // ADC threshold (0-4095) for detecting press
+int rfp602RawValue = 0;
+float rfp602Voltage = 0.0f;
+bool rfp602Pressed = false;
+bool rfp602LastPressedState = false;
+unsigned long lastRfp602SampleTime = 0;
+const unsigned long RFP602_SAMPLE_INTERVAL_MS =
+    50; // Read ADC at 20Hz (every 50ms)
+unsigned long lastRfp602MqttTime = 0;
+const unsigned long RFP602_MQTT_INTERVAL_MS =
+    250; // 4Hz MQTT stream (every 250ms = 4 packets/sec)
 
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
 
-// Static IP Configuration (Set to true only if router is fixed at 192.168.1.x)
-const bool USE_STATIC_IP = false;
+// Static IP Configuration
 IPAddress STATIC_IP(192, 168, 1, 4);
 IPAddress GATEWAY_IP(192, 168, 1, 1);
 IPAddress SUBNET_MASK(255, 255, 255, 0);
-IPAddress DNS_PRIMARY(192, 168, 1, 1);
-IPAddress DNS_SECONDARY(8, 8, 8, 8);
+IPAddress DNS_PRIMARY(10, 178, 191, 101); // Real DNS Server on MMm
+IPAddress DNS_SECONDARY(8, 8, 8, 8);      // Google DNS
 
 WebServer webServer(80);
 Preferences nodeConfigPreferences;
 
 // 16-Pad GPIO Hardware Configuration (ESP32-C3 Safe Pins)
+// Note: L1 is set to -1 because GPIO 0 is used by analog RFP-602 pressure
+// sensor
 struct PadConfig {
   const char *name;
   int8_t pin;
 };
 
 const PadConfig PAD_CONFIGS[] = {
-    {"L1", 0},  {"L2", 1},  {"L3", 2},  {"L4", 3},  {"L5", 4},  {"L6", 5},
+    {"L1", -1}, {"L2", 1},  {"L3", 2},  {"L4", 3},  {"L5", 4},  {"L6", 5},
     {"L7", 6},  {"L8", 7},  {"R1", 10}, {"R2", -1}, {"R3", -1}, {"R4", -1},
     {"R5", -1}, {"R6", -1}, {"R7", -1}, {"R8", -1}};
 
@@ -372,7 +510,7 @@ NodeConfig nodeConfigs[MAX_NODES] = {
 
 unsigned long lastMqttStreamTime = 0;
 const unsigned long MQTT_STREAM_INTERVAL_MS =
-    50; // 20Hz MQTT Stream (50ms interval)
+    250; // 4Hz MQTT Stream (reliable, adheres to cloud broker limits)
 unsigned long lastMqttReconnectAttempt = 0;
 unsigned long lastBleScanTime = 0;
 const unsigned long STALE_TIMEOUT_MS =
@@ -383,6 +521,7 @@ bool isScanning = false;
 // Forward declaration
 void sendPadPressEvent(const char *sensorId);
 void publishImuStream();
+void readRfp602Sensor();
 void maintainMqttConnection();
 void resumeBleScanIfNeeded(bool forceRestart = false);
 void handleNodesApi();
@@ -445,6 +584,34 @@ void notifyCallback(NimBLERemoteCharacteristic *pRemoteChar, uint8_t *pData,
   if (length < sizeof(ImuPacket)) {
     Serial.printf("⚠️ [GW-NOTIFY-LEN] Short packet: %u bytes (expected %u)\n",
                   (unsigned int)length, (unsigned int)sizeof(ImuPacket));
+    return;
+  }
+
+  // Biomarker notification (MAX30102 on Node 1)
+  if (length == sizeof(BioPacket) &&
+      (pData[sizeof(BioPacket) - 1] & BIO_PACKET_MARKER_MASK) ==
+          BIO_PACKET_MARKER) {
+    const BioPacket *bio = (const BioPacket *)pData;
+    if (bio->nodeId >= 1 && bio->nodeId <= MAX_NODES) {
+      int idx = bio->nodeId - 1;
+      nodesTelemetry[idx].bpm = bio->bpm / 10.0f;
+      nodesTelemetry[idx].spo2 = bio->spo2;
+      nodesTelemetry[idx].finger = (bio->finger != 0);
+      nodesTelemetry[idx].rawRed = bio->red;
+      nodesTelemetry[idx].rawIr = bio->ir;
+      nodesTelemetry[idx].lastReceivedMillis = millis();
+
+      static unsigned long lastBioLog = 0;
+      if (millis() - lastBioLog >= 1000) {
+        lastBioLog = millis();
+        Serial.printf("📥 [GW-BIO] Node #%d | IR: %lu | Red: %lu | BPM: %.1f | "
+                      "SpO2: %u%% | Finger: %s\n",
+                      bio->nodeId, (unsigned long)bio->ir,
+                      (unsigned long)bio->red, nodesTelemetry[idx].bpm,
+                      nodesTelemetry[idx].spo2,
+                      nodesTelemetry[idx].finger ? "YES" : "NO");
+      }
+    }
     return;
   }
 
@@ -688,8 +855,9 @@ void connectToNode(int idx) {
 
   pNodeClients[idx] = pClient;
   pClient->setClientCallbacks(new GatewayClientCallbacks(id), true);
-  // Connection parameters: 20-40ms interval, latency 0 (instant delivery), supervision timeout 200 (2.0s)
-  pClient->setConnectionParams(16, 32, 0, 200);
+  // Connection parameters: 20-40ms interval, latency 2, supervision timeout 200
+  // (2.0s)
+  pClient->setConnectionParams(16, 32, 2, 200);
   pClient->setConnectTimeout(5);
 
   bool connected = false;
@@ -791,8 +959,8 @@ void maintainMqttConnection() {
       if (mqttClient.connect(mqttClientId, TOPIC_STATUS, 0, false, "offline")) {
         Serial.println("CONNECTED! 🎉");
         mqttClient.publish(TOPIC_STATUS, "online", false);
-        Serial.printf("📡 [MQTT] Ready! Publishing to '%s' and '%s'\n",
-                      TOPIC_IMU, TOPIC_PAD);
+        Serial.printf("📡 [MQTT] Ready! Publishing to '%s', '%s' and '%s'\n",
+                      TOPIC_IMU, TOPIC_PAD, TOPIC_PRESSURE);
       } else {
         Serial.printf("failed, rc=%d (will retry in 5s)\n", mqttClient.state());
       }
@@ -839,6 +1007,11 @@ void publishImuStream() {
   gw["uptimeMs"] = millis();
   gw["connectedNodes"] = connectedCount;
 
+  JsonObject pressObj = doc["pressure"].to<JsonObject>();
+  pressObj["raw"] = rfp602RawValue;
+  pressObj["voltage"] = round(rfp602Voltage * 100.0f) / 100.0f;
+  pressObj["pressed"] = rfp602Pressed;
+
   JsonArray nodes = doc["nodes"].to<JsonArray>();
   for (int i = 0; i < MAX_NODES; i++) {
     if (nodesTelemetry[i].connected &&
@@ -858,11 +1031,6 @@ void publishImuStream() {
       acc.add(round(nodesTelemetry[i].ax * 100.0f) / 100.0f);
       acc.add(round(nodesTelemetry[i].ay * 100.0f) / 100.0f);
       acc.add(round(nodesTelemetry[i].az * 100.0f) / 100.0f);
-
-      JsonArray gyr = n["gyro"].to<JsonArray>();
-      gyr.add(round(nodesTelemetry[i].gx * 1000.0f) / 1000.0f);
-      gyr.add(round(nodesTelemetry[i].gy * 1000.0f) / 1000.0f);
-      gyr.add(round(nodesTelemetry[i].gz * 1000.0f) / 1000.0f);
     }
   }
 
@@ -912,7 +1080,15 @@ void handleSerialSimulator() {
   if (input == "HELP") {
     Serial.println("\n--- [PlanKO Gateway Simulator] ---");
     Serial.println("Type 'L1' - 'L8' or 'R1' - 'R8' to trigger pad event");
+    Serial.println("Type 'RFP' or 'PRESSURE' to read RFP-602 sensor");
     Serial.println("Type 'STATUS' to see connected BLE nodes & stats");
+    return;
+  }
+
+  if (input == "RFP" || input == "PRESSURE") {
+    Serial.printf("🎯 [RFP-602] Raw ADC: %d | Voltage: %.2fV | State: %s\n",
+                  rfp602RawValue, rfp602Voltage,
+                  rfp602Pressed ? "PRESSED" : "IDLE");
     return;
   }
 
@@ -1243,6 +1419,14 @@ void setup() {
     gatewayBootId = 1;
   loadNodeConfigs();
 
+  // Initialize RFP-602 Pressure Sensor (ADC1_CH0 on GPIO 0)
+  analogReadResolution(12);
+  analogSetAttenuation(ADC_11db);
+  pinMode(RFP602_PIN, INPUT);
+  Serial.printf(
+      "🎯 [RFP602] Pressure sensor initialized on GPIO %d (ADC1_CH0)\n",
+      RFP602_PIN);
+
   // Initialize Pads
   for (size_t i = 0; i < TOTAL_PADS; i++) {
     sensors[i].sensorId = PAD_CONFIGS[i].name;
@@ -1312,17 +1496,13 @@ void setup() {
 
   WiFi.setTxPower(WIFI_POWER_8_5dBm); // Low TX power prevents voltage drop on
                                       // ESP32-C3 DevKit during auth
-  if (USE_STATIC_IP) {
-    if (!WiFi.config(STATIC_IP, GATEWAY_IP, SUBNET_MASK, DNS_PRIMARY,
-                     DNS_SECONDARY)) {
-      Serial.println(
-          "⚠️ [WIFI] Static IP configuration failed; DHCP may be used instead.");
-    }
-    Serial.printf("🌐 [WIFI] Requested Gateway IP: %s\n",
-                  STATIC_IP.toString().c_str());
-  } else {
-    Serial.println("🌐 [WIFI] Using DHCP (Automatic IP, Gateway & DNS)...");
+  if (!WiFi.config(STATIC_IP, GATEWAY_IP, SUBNET_MASK, DNS_PRIMARY,
+                   DNS_SECONDARY)) {
+    Serial.println(
+        "⚠️ [WIFI] Static IP configuration failed; DHCP may be used instead.");
   }
+  Serial.printf("🌐 [WIFI] Requested Gateway IP: %s\n",
+                STATIC_IP.toString().c_str());
   Serial.printf("⏳ [WIFI] Connecting to SSID: '%s'...\n", WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   int attempts = 0;
@@ -1396,6 +1576,7 @@ void loop() {
     mqttClient.loop();
   }
   webServer.handleClient();
+  readRfp602Sensor();
   handlePadInputs();
   handleSerialSimulator();
 
@@ -1438,6 +1619,9 @@ void loop() {
     publishImuStream();
   }
 
+  // Periodic MQTT Publish of Node 1 biometric telemetry (4Hz)
+  publishBioTelemetry();
+
   // 🌟 Auto-resume BLE Scan watchdog every 1s if any node is disconnected
   static unsigned long lastBleScanWatchdog = 0;
   if (now - lastBleScanWatchdog >= 1000) {
@@ -1463,7 +1647,7 @@ void loop() {
       strcpy(nodesSummary, "None");
 
     Serial.printf("🌐 [GATEWAY] Wi-Fi: %s (%s) | MQTT: %s | BLE: %d/4 [%s] | "
-                  "Heap: %uB | Uptime: %lus\n",
+                  "RFP: %d (%s) | Heap: %uB | Uptime: %lus\n",
                   (WiFi.status() == WL_CONNECTED) ? "ONLINE" : "OFFLINE",
                   (WiFi.status() == WL_CONNECTED)
                       ? WiFi.localIP().toString().c_str()
