@@ -25,7 +25,6 @@
 #include <Wire.h>
 #include <stdlib.h>
 
-
 #if defined(ROLE_NODE)
 // ==============================================================================
 // ------------------------------ ROLE: IMU NODE
@@ -73,53 +72,6 @@ unsigned long lastSerialPrintTime = 0;
     if (Serial && Serial.availableForWrite() > 32)                             \
       Serial.printf(__VA_ARGS__);                                              \
   } while (0)
-
-#if (NODE_ID == 1)
-#include <MAX30105.h>
-#include <heartRate.h>
-
-MAX30105 max30102;
-bool max30102Detected = false;
-float currentBpm = 0.0f;
-uint8_t currentSpo2 = 0;
-bool currentFinger = false;
-uint32_t currentRed = 0;
-uint32_t currentIr = 0;
-const byte RATE_SIZE = 4;
-byte rates[RATE_SIZE] = {0, 0, 0, 0};
-byte rateSpot = 0;
-long lastBeat = 0;
-float beatAvg = 0.0f;
-unsigned long lastBioNotifyTime = 0;
-const unsigned long BIO_NOTIFY_INTERVAL_MS = 250; // 4Hz Bio stream
-
-bool initMax30102() {
-  NODE_LOGLN("🔍 [I2C] Probing MAX30102 at address 0x57...");
-  Wire.beginTransmission(0x57);
-  byte err = Wire.endTransmission();
-  if (err != 0) {
-    NODE_LOGF("❌ [MAX30102] Not responding at 0x57 (err=%d). Check SDA(8), SCL(9), 3.3V, GND\n", err);
-    return false;
-  }
-  NODE_LOGLN("🎉 [MAX30102] Found device at 0x57! Initializing...");
-
-  // Initialize at standard 100kHz for highest noise tolerance
-  max30102.begin(Wire, I2C_SPEED_STANDARD);
-
-  // Setup sensor: powerLevel=0x3F (~12mA), sampleAverage=4, ledMode=2 (Red+IR), sampleRate=100Hz, pulseWidth=411, adcRange=4096
-  max30102.setup(0x3F, 4, 2, 100, 411, 4096);
-  max30102.setPulseAmplitudeRed(0x3F);
-  max30102.setPulseAmplitudeIR(0x3F);
-  max30102.setPulseAmplitudeGreen(0);
-
-  // Re-assert pins and speed for I2C bus
-  Wire.setPins(I2C_SDA_PIN, I2C_SCL_PIN);
-  Wire.setClock(100000);
-
-  NODE_LOGLN("✅ [MAX30102] Sensor active and streaming!");
-  return true;
-}
-#endif
 
 class ServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer *pServer) override {
@@ -320,7 +272,8 @@ void loop() {
       currentSpo2 = 0;
       if (now - lastBeat > 3000) {
         currentFinger = false;
-        for (byte x = 0; x < RATE_SIZE; x++) rates[x] = 0;
+        for (byte x = 0; x < RATE_SIZE; x++)
+          rates[x] = 0;
         rateSpot = 0;
         beatAvg = 0.0f;
       }
@@ -344,7 +297,8 @@ void loop() {
             }
           }
 
-          // Require at least 2 consecutive rhythmic beats to confirm a real human finger
+          // Require at least 2 consecutive rhythmic beats to confirm a real
+          // human finger
           if (count >= 2) {
             beatAvg = (float)sum / count;
             currentBpm = beatAvg;
@@ -353,8 +307,10 @@ void loop() {
             if (currentIr > 0 && currentRed > 0) {
               float ratio = (float)currentRed / (float)currentIr;
               int estimatedSpo2 = (int)(110.0f - 25.0f * ratio);
-              if (estimatedSpo2 > 100) estimatedSpo2 = 100;
-              if (estimatedSpo2 < 85) estimatedSpo2 = 85;
+              if (estimatedSpo2 > 100)
+                estimatedSpo2 = 100;
+              if (estimatedSpo2 < 85)
+                estimatedSpo2 = 85;
               currentSpo2 = (uint8_t)estimatedSpo2;
             }
           }
@@ -403,11 +359,15 @@ void loop() {
       }
 #if (NODE_ID == 1)
       if (max30102Detected) {
-        Serial.printf("❤️ [Node #%d][MAX30102] IR: %u | Red: %u | BPM: %5.1f | SpO2: %3u%% | Finger: %s\n",
-                      NODE_ID, currentIr, currentRed, currentBpm, (unsigned int)currentSpo2,
+        Serial.printf("❤️ [Node #%d][MAX30102] IR: %u | Red: %u | BPM: %5.1f | "
+                      "SpO2: %3u%% | Finger: %s\n",
+                      NODE_ID, currentIr, currentRed, currentBpm,
+                      (unsigned int)currentSpo2,
                       currentFinger ? "DETECTED" : "NO FINGER");
       } else {
-        Serial.printf("⚠️ [Node #%d][MAX30102] Not responding at 0x57 (Check SDA=8, SCL=9, 3.3V, GND)\n", NODE_ID);
+        Serial.printf("⚠️ [Node #%d][MAX30102] Not responding at 0x57 (Check "
+                      "SDA=8, SCL=9, 3.3V, GND)\n",
+                      NODE_ID);
       }
 #endif
     }
@@ -430,7 +390,6 @@ void loop() {
 #include <freertos/FreeRTOS.h>
 #include <freertos/portmacro.h>
 
-
 // Wi-Fi Configuration
 const char *WIFI_SSID = "MMm";
 const char *WIFI_PASS = "123456789";
@@ -452,22 +411,25 @@ char mqttClientId[32] = "PlanKO_Gateway_ESP32";
 #define RFP602_PIN 0 // ADC1_CH0 on ESP32-C3
 #endif
 
-const int RFP602_PRESS_THRESHOLD = 300; // ADC threshold (0-4095) for detecting press
+const int RFP602_PRESS_THRESHOLD =
+    300; // ADC threshold (0-4095) for detecting press
 int rfp602RawValue = 0;
 float rfp602Voltage = 0.0f;
 bool rfp602Pressed = false;
 bool rfp602LastPressedState = false;
 unsigned long lastRfp602SampleTime = 0;
-const unsigned long RFP602_SAMPLE_INTERVAL_MS = 50; // Read ADC at 20Hz (every 50ms)
+const unsigned long RFP602_SAMPLE_INTERVAL_MS =
+    50; // Read ADC at 20Hz (every 50ms)
 unsigned long lastRfp602MqttTime = 0;
-const unsigned long RFP602_MQTT_INTERVAL_MS = 250; // 4Hz MQTT stream (every 250ms = 4 packets/sec)
+const unsigned long RFP602_MQTT_INTERVAL_MS =
+    250; // 4Hz MQTT stream (every 250ms = 4 packets/sec)
 
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
 
-// Static IP Configuration matching current Wi-Fi network 'MMm'
-IPAddress STATIC_IP(10, 178, 191, 204);
-IPAddress GATEWAY_IP(10, 178, 191, 101);
+// Static IP Configuration
+IPAddress STATIC_IP(192, 168, 1, 4);
+IPAddress GATEWAY_IP(192, 168, 1, 1);
 IPAddress SUBNET_MASK(255, 255, 255, 0);
 IPAddress DNS_PRIMARY(10, 178, 191, 101); // Real DNS Server on MMm
 IPAddress DNS_SECONDARY(8, 8, 8, 8);      // Google DNS
@@ -476,14 +438,15 @@ WebServer webServer(80);
 Preferences nodeConfigPreferences;
 
 // 16-Pad GPIO Hardware Configuration (ESP32-C3 Safe Pins)
-// Note: L1 is set to -1 because GPIO 0 is used by analog RFP-602 pressure sensor
+// Note: L1 is set to -1 because GPIO 0 is used by analog RFP-602 pressure
+// sensor
 struct PadConfig {
   const char *name;
   int8_t pin;
 };
 
 const PadConfig PAD_CONFIGS[] = {
-    {"L1", -1},  {"L2", 1},  {"L3", 2},  {"L4", 3},  {"L5", 4},  {"L6", 5},
+    {"L1", -1}, {"L2", 1},  {"L3", 2},  {"L4", 3},  {"L5", 4},  {"L6", 5},
     {"L7", 6},  {"L8", 7},  {"R1", 10}, {"R2", -1}, {"R3", -1}, {"R4", -1},
     {"R5", -1}, {"R6", -1}, {"R7", -1}, {"R8", -1}};
 
@@ -547,7 +510,7 @@ NodeConfig nodeConfigs[MAX_NODES] = {
 
 unsigned long lastMqttStreamTime = 0;
 const unsigned long MQTT_STREAM_INTERVAL_MS =
-    250; // 4Hz MQTT Stream (every 250ms)
+    250; // 4Hz MQTT Stream (reliable, adheres to cloud broker limits)
 unsigned long lastMqttReconnectAttempt = 0;
 unsigned long lastBleScanTime = 0;
 const unsigned long STALE_TIMEOUT_MS =
@@ -641,9 +604,11 @@ void notifyCallback(NimBLERemoteCharacteristic *pRemoteChar, uint8_t *pData,
       static unsigned long lastBioLog = 0;
       if (millis() - lastBioLog >= 1000) {
         lastBioLog = millis();
-        Serial.printf("📥 [GW-BIO] Node #%d | IR: %lu | Red: %lu | BPM: %.1f | SpO2: %u%% | Finger: %s\n",
-                      bio->nodeId, (unsigned long)bio->ir, (unsigned long)bio->red,
-                      nodesTelemetry[idx].bpm, nodesTelemetry[idx].spo2,
+        Serial.printf("📥 [GW-BIO] Node #%d | IR: %lu | Red: %lu | BPM: %.1f | "
+                      "SpO2: %u%% | Finger: %s\n",
+                      bio->nodeId, (unsigned long)bio->ir,
+                      (unsigned long)bio->red, nodesTelemetry[idx].bpm,
+                      nodesTelemetry[idx].spo2,
                       nodesTelemetry[idx].finger ? "YES" : "NO");
       }
     }
@@ -667,7 +632,9 @@ void notifyCallback(NimBLERemoteCharacteristic *pRemoteChar, uint8_t *pData,
     sample.rawGx = raw->gx;
     sample.rawGy = raw->gy;
     sample.rawGz = raw->gz;
-    sample.status = raw->marker & 1;
+    nodesTelemetry[idx].gx = (raw->gx / 65.5f) * 0.01745329252f;
+    nodesTelemetry[idx].gy = (raw->gy / 65.5f) * 0.01745329252f;
+    nodesTelemetry[idx].gz = (raw->gz / 65.5f) * 0.01745329252f;
     if (nodesTelemetry[idx].lastSequence == raw->sequence) {
       sample.telemetryValid = true;
       sample.pitch = (int16_t)roundf(nodesTelemetry[idx].pitch * 100.0f);
@@ -1064,15 +1031,6 @@ void publishImuStream() {
       acc.add(round(nodesTelemetry[i].ax * 100.0f) / 100.0f);
       acc.add(round(nodesTelemetry[i].ay * 100.0f) / 100.0f);
       acc.add(round(nodesTelemetry[i].az * 100.0f) / 100.0f);
-
-      if (i == 0) { // Node 1 biometric telemetry
-        JsonObject bio = n["bio"].to<JsonObject>();
-        bio["bpm"] = round(nodesTelemetry[i].bpm * 10.0f) / 10.0f;
-        bio["spo2"] = nodesTelemetry[i].spo2;
-        bio["finger"] = nodesTelemetry[i].finger;
-        bio["ir"] = nodesTelemetry[i].rawIr;
-        bio["red"] = nodesTelemetry[i].rawRed;
-      }
     }
   }
 
@@ -1084,56 +1042,6 @@ void publishImuStream() {
     lastPubFailLog = millis();
     Serial.printf("⚠️ [MQTT] Publish to '%s' failed! rc=%d\n", TOPIC_IMU,
                   mqttClient.state());
-  }
-}
-
-void readRfp602Sensor() {
-  unsigned long now = millis();
-  if (now - lastRfp602SampleTime < RFP602_SAMPLE_INTERVAL_MS) {
-    return;
-  }
-  lastRfp602SampleTime = now;
-
-  // Read ADC with direct fast response
-  int currentRaw = analogRead(RFP602_PIN);
-  rfp602RawValue = (rfp602RawValue == 0) ? currentRaw : (int)(0.90f * currentRaw + 0.10f * rfp602RawValue);
-  rfp602Voltage = (rfp602RawValue / 4095.0f) * 3.3f;
-  rfp602Pressed = (rfp602RawValue >= RFP602_PRESS_THRESHOLD);
-
-  // Publish at 4Hz (every 250ms) or immediately on state change (pressed/released)
-  bool stateChanged = (rfp602Pressed != rfp602LastPressedState);
-
-  if (stateChanged || (now - lastRfp602MqttTime >= RFP602_MQTT_INTERVAL_MS)) {
-    lastRfp602MqttTime = now;
-    rfp602LastPressedState = rfp602Pressed;
-
-    if (mqttClient.connected()) {
-      char jsonBuf[128];
-      snprintf(jsonBuf, sizeof(jsonBuf),
-               "{\"sensor\":\"rfp602\",\"raw\":%d,\"voltage\":%.2f,\"pressed\":%s,\"ts\":%lu}",
-               rfp602RawValue, rfp602Voltage, rfp602Pressed ? "true" : "false", now);
-      mqttClient.publish(TOPIC_PRESSURE, jsonBuf);
-    }
-  }
-}
-
-void publishBioTelemetry() {
-  static unsigned long lastBioMqttTime = 0;
-  unsigned long now = millis();
-  if (now - lastBioMqttTime < 250) { // 4Hz MQTT rate
-    return;
-  }
-  lastBioMqttTime = now;
-
-  if (nodesTelemetry[0].connected && mqttClient.connected()) {
-    char bioBuf[160];
-    snprintf(bioBuf, sizeof(bioBuf),
-             "{\"nodeId\":1,\"bpm\":%.1f,\"spo2\":%u,\"finger\":%s,\"ir\":%lu,\"red\":%lu,\"ts\":%lu}",
-             nodesTelemetry[0].bpm, nodesTelemetry[0].spo2,
-             nodesTelemetry[0].finger ? "true" : "false",
-             (unsigned long)nodesTelemetry[0].rawIr,
-             (unsigned long)nodesTelemetry[0].rawRed, now);
-    mqttClient.publish(TOPIC_BIO, bioBuf);
   }
 }
 
@@ -1179,7 +1087,8 @@ void handleSerialSimulator() {
 
   if (input == "RFP" || input == "PRESSURE") {
     Serial.printf("🎯 [RFP-602] Raw ADC: %d | Voltage: %.2fV | State: %s\n",
-                  rfp602RawValue, rfp602Voltage, rfp602Pressed ? "PRESSED" : "IDLE");
+                  rfp602RawValue, rfp602Voltage,
+                  rfp602Pressed ? "PRESSED" : "IDLE");
     return;
   }
 
@@ -1514,7 +1423,9 @@ void setup() {
   analogReadResolution(12);
   analogSetAttenuation(ADC_11db);
   pinMode(RFP602_PIN, INPUT);
-  Serial.printf("🎯 [RFP602] Pressure sensor initialized on GPIO %d (ADC1_CH0)\n", RFP602_PIN);
+  Serial.printf(
+      "🎯 [RFP602] Pressure sensor initialized on GPIO %d (ADC1_CH0)\n",
+      RFP602_PIN);
 
   // Initialize Pads
   for (size_t i = 0; i < TOTAL_PADS; i++) {
@@ -1583,12 +1494,15 @@ void setup() {
   current_conf.sta.pmf_cfg.required = false;
   esp_wifi_set_config(WIFI_IF_STA, &current_conf);
 
-  WiFi.setTxPower(WIFI_POWER_8_5dBm); // Low TX power prevents voltage drop on ESP32-C3 DevKit during auth
-  if (!WiFi.config(STATIC_IP, GATEWAY_IP, SUBNET_MASK, DNS_PRIMARY, DNS_SECONDARY)) {
-    Serial.println("⚠️ [WIFI] Static IP configuration failed; DHCP may be used instead.");
+  WiFi.setTxPower(WIFI_POWER_8_5dBm); // Low TX power prevents voltage drop on
+                                      // ESP32-C3 DevKit during auth
+  if (!WiFi.config(STATIC_IP, GATEWAY_IP, SUBNET_MASK, DNS_PRIMARY,
+                   DNS_SECONDARY)) {
+    Serial.println(
+        "⚠️ [WIFI] Static IP configuration failed; DHCP may be used instead.");
   }
-  Serial.printf("🌐 [WIFI] Gateway IP: %s (DNS: %s)\n",
-                STATIC_IP.toString().c_str(), DNS_PRIMARY.toString().c_str());
+  Serial.printf("🌐 [WIFI] Requested Gateway IP: %s\n",
+                STATIC_IP.toString().c_str());
   Serial.printf("⏳ [WIFI] Connecting to SSID: '%s'...\n", WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   int attempts = 0;
@@ -1618,7 +1532,7 @@ void setup() {
   snprintf(mqttClientId, sizeof(mqttClientId), "PlanKO_GW_%08X",
            (uint32_t)ESP.getEfuseMac());
   mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
-  mqttClient.setBufferSize(1024);
+  mqttClient.setBufferSize(2048);
   mqttClient.setKeepAlive(30);
   mqttClient.setSocketTimeout(5);
   Serial.printf("🔌 MQTT Broker: %s:%u (ClientID: %s)\n", MQTT_BROKER,
@@ -1739,13 +1653,7 @@ void loop() {
                       ? WiFi.localIP().toString().c_str()
                       : "No IP",
                   mqttClient.connected() ? "CONNECTED" : "DISCONNECTED",
-                  connectedCount, nodesSummary,
-                  rfp602RawValue, rfp602Pressed ? "PRESSED" : "IDLE",
-                  ESP.getFreeHeap(), now / 1000);
-    if (nodesTelemetry[0].connected && nodesTelemetry[0].finger) {
-      Serial.printf("❤️ [GW-BIO] Node #1 BPM: %5.1f | SpO2: %3u%% | Finger: DETECTED\n",
-                    nodesTelemetry[0].bpm, nodesTelemetry[0].spo2);
-    }
+                  connectedCount, nodesSummary, ESP.getFreeHeap(), now / 1000);
   }
 }
 

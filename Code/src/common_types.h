@@ -71,6 +71,9 @@ struct NodeTelemetry {
     float    ax;
     float    ay;
     float    az;
+    float    gx;
+    float    gy;
+    float    gz;
     uint8_t  status;
     float    bpm;
     uint8_t  spo2;

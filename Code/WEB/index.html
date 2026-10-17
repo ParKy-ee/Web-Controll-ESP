@@ -1,23 +1,1314 @@
 <!doctype html>
-<html lang="en">
-
+<html lang="th">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Document</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1118">
+  <title>PlanKO · IMU 3D Monitor & Dataset AI Suite</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1118;
+      --panel: #111b25;
+      --panel-2: #152230;
+      --line: #223444;
+      --text: #e9f1f7;
+      --muted: #8ea3b3;
+      --mint: #74f0c2;
+      --blue: #6ca9ff;
+      --orange: #ffb86b;
+      --red: #ff7777;
+      --accent: #205c52;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(ellipse at 50% -15%, rgba(32, 92, 82, .32), transparent 50%),
+        radial-gradient(ellipse at 85% 100%, rgba(30, 60, 95, .25), transparent 50%),
+        var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    button, input, select { font: inherit; }
+    .shell {
+      width: min(1320px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 24px 0 48px;
+    }
+
+    /* Top Line Header */
+    .topline {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+    .brand { display: flex; align-items: center; gap: 14px; }
+    .brand-mark {
+      width: 44px; height: 44px;
+      display: grid; place-items: center;
+      border-radius: 12px;
+      color: var(--mint);
+      background: rgba(116, 240, 194, .12);
+      border: 1px solid rgba(116, 240, 194, .3);
+      font-size: 22px; font-weight: 800;
+    }
+    h1 { margin: 0; font-size: clamp(20px, 2.8vw, 26px); letter-spacing: -.02em; font-weight: 750; }
+    .subtitle { margin: 3px 0 0; color: var(--muted); font-size: 13px; }
+    .status-badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 6px 14px; border-radius: 999px;
+      background: #14222f; border: 1px solid var(--line);
+      font-size: 12px; font-weight: 600;
+    }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #556b7c; }
+    .status-dot.online { background: var(--mint); box-shadow: 0 0 10px rgba(116, 240, 194, .7); }
+    .status-dot.offline { background: var(--red); box-shadow: 0 0 10px rgba(255, 119, 119, .7); }
+
+    /* Toolbar */
+    .toolbar {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+      margin-bottom: 18px; padding: 12px 16px;
+      background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    }
+    .field { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+    .field input, .field select {
+      background: #0d151e; color: var(--text); border: 1px solid var(--line);
+      border-radius: 8px; padding: 6px 10px; min-height: 34px; font-size: 12px;
+    }
+    .field select { cursor: pointer; }
+    .toolbar-spacer { flex: 1 1 auto; }
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      padding: 7px 14px; border-radius: 8px; min-height: 34px;
+      border: 1px solid var(--line); background: #182836; color: var(--text);
+      font-size: 12px; font-weight: 600; cursor: pointer; transition: all .15s ease;
+    }
+    .btn:hover { border-color: var(--mint); color: #fff; background: #203547; }
+    .btn.primary { background: var(--accent); border-color: #388a7a; color: #fff; }
+    .btn.primary:hover { background: #287364; }
+    .btn.danger { background: #542226; border-color: #7d333a; color: #ff9d9d; }
+    .btn.danger:hover { background: #69282d; }
+    .btn:disabled { opacity: .45; cursor: default; border-color: var(--line) !important; background: #182836 !important; }
+
+    /* Main Stage Grid (3D + Sensor Cards) */
+    .stage-grid {
+      display: grid; grid-template-columns: minmax(0, 1.8fr) minmax(280px, 1fr);
+      gap: 16px; margin-bottom: 20px;
+    }
+    .visual-card {
+      background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+      padding: 16px; display: flex; flex-direction: column;
+    }
+    .visual-head {
+      display: flex; justify-content: space-between; align-items: flex-start;
+      margin-bottom: 12px;
+    }
+    .visual-title { font-size: 16px; font-weight: 700; }
+    .visual-caption { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .source-label {
+      padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 600;
+      background: #152533; color: var(--mint); border: 1px solid rgba(116, 240, 194, .2);
+    }
+    .canvas-wrap {
+      position: relative; width: 100%; flex: 1 1 auto; min-height: 420px;
+      background: #090e14; border: 1px solid #192734; border-radius: 10px; overflow: hidden;
+    }
+    canvas { display: block; width: 100%; height: 100%; }
+    .canvas-hint {
+      position: absolute; left: 12px; bottom: 10px;
+      font-size: 11px; color: #4e6575; pointer-events: none;
+    }
+
+    /* Side Cards */
+    .side-stack { display: flex; flex-direction: column; gap: 14px; }
+    .side-card {
+      background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px;
+    }
+    .side-heading {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 12px; font-size: 14px; font-weight: 700;
+    }
+    .sensor-pill {
+      font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 6px;
+      background: #173830; color: var(--mint); border: 1px solid rgba(116, 240, 194, .3);
+    }
+    .angle-list { display: flex; flex-direction: column; gap: 8px; }
+    .angle-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 12px; background: #0d151e; border: 1px solid #1a2a38; border-radius: 8px;
+    }
+    .angle-name { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; }
+    .axis-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .axis-x { background: var(--red); }
+    .axis-y { background: var(--mint); }
+    .axis-z { background: var(--blue); }
+    .angle-val { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .angle-unit { font-size: 11px; color: var(--muted); margin-left: 4px; }
+
+    .vector-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 8px; }
+    .vector-cell {
+      padding: 6px 8px; background: #0d151e; border: 1px solid #1a2a38; border-radius: 6px; text-align: center;
+    }
+    .vector-cell small { display: block; font-size: 10px; color: var(--muted); }
+    .vector-cell b { font-size: 12px; font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text); }
+
+    /* Pressure Card */
+    .pressure-meter { margin-top: 10px; background: #0d151e; border-radius: 8px; height: 16px; overflow: hidden; border: 1px solid #1c2c39; position: relative; }
+    .pressure-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #6ca9ff, var(--mint)); transition: width .15s ease; border-radius: 8px; }
+    .pressure-status { margin-top: 8px; display: flex; align-items: center; justify-content: space-between; font-size: 12px; }
+    .badge-press { padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 700; background: #1c2c39; color: var(--muted); }
+    .badge-press.active { background: #153c32; color: var(--mint); }
+
+    /* ============================================================================== */
+    /* DATASET & AI MACHINE LEARNING SECTION */
+    /* ============================================================================== */
+    .suite-card {
+      background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+      padding: 20px; margin-bottom: 20px;
+    }
+    .suite-tabs {
+      display: flex; gap: 8px; border-bottom: 1px solid var(--line); padding-bottom: 12px; margin-bottom: 18px;
+    }
+    .tab-btn {
+      padding: 8px 16px; border-radius: 8px; background: transparent; border: 1px solid transparent;
+      color: var(--muted); font-size: 13px; font-weight: 600; cursor: pointer; transition: all .15s ease;
+    }
+    .tab-btn:hover { color: var(--text); background: rgba(255,255,255,.04); }
+    .tab-btn.active { background: #182837; border-color: var(--line); color: var(--mint); }
+
+    .tab-pane { display: none; }
+    .tab-pane.active { display: block; }
+
+    /* Dataset Form Controls */
+    .rec-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px;
+      margin-bottom: 14px;
+    }
+    .rec-field { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--muted); }
+    .rec-field input, .rec-field select {
+      background: #0d151e; color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+      padding: 8px 10px; font-size: 13px; min-height: 38px;
+    }
+
+    /* Phase Selection */
+    .phase-bar {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+      padding: 12px; background: #0c141d; border: 1px solid var(--line); border-radius: 10px;
+      margin-bottom: 14px;
+    }
+    .phase-btn {
+      padding: 6px 14px; border-radius: 8px; font-size: 12px; font-weight: 600;
+      background: #162430; border: 1px solid #233748; color: var(--muted); cursor: pointer;
+    }
+    .phase-btn.active {
+      background: rgba(116, 240, 194, .15); border-color: var(--mint); color: var(--mint);
+    }
+    .guided-box {
+      margin-top: 10px; padding: 10px 14px; background: rgba(20, 36, 48, .6);
+      border: 1px solid #1c3242; border-radius: 8px; font-size: 12px;
+    }
+    .guided-progress-wrap {
+      margin-top: 8px; background: #0d151e; height: 10px; border-radius: 5px; overflow: hidden;
+    }
+    .guided-progress-bar {
+      height: 100%; width: 0%; background: linear-gradient(90deg, #6ca9ff, var(--mint));
+      transition: width .2s linear;
+    }
+
+    .rec-actions {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 14px;
+    }
+    .rec-badge {
+      padding: 5px 12px; border-radius: 999px; font-size: 12px; font-weight: 700;
+      background: #182836; color: var(--muted);
+    }
+    .rec-badge.recording {
+      background: rgba(255, 119, 119, .2); color: #ff8e8e; animation: pulse 1.2s infinite;
+    }
+    @keyframes pulse { 0% { opacity: 1; } 50% { opacity: .5; } 100% { opacity: 1; } }
+
+    .download-list {
+      display: flex; flex-direction: column; gap: 6px; margin-top: 14px;
+    }
+    .csv-link {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 12px; background: #0c141d; border: 1px solid #192a38; border-radius: 8px;
+      color: var(--mint); font-size: 12px; text-decoration: none;
+    }
+    .csv-link:hover { border-color: var(--mint); background: #101c27; }
+
+    /* AI Live Prediction Grid */
+    .ai-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-top: 12px;
+    }
+    .ai-card {
+      padding: 12px; background: #0d151e; border: 1px solid var(--line); border-radius: 10px;
+    }
+    .ai-card small { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+    .ai-card strong { font-size: 18px; font-weight: 750; color: var(--text); overflow-wrap: anywhere; }
+
+    /* Code Snippet Box */
+    .code-box {
+      background: #090e15; border: 1px solid #192734; border-radius: 8px; padding: 12px 14px;
+      font-family: ui-monospace, Menlo, Monaco, Consolas, monospace; font-size: 12px; color: #a4bece;
+      line-height: 1.6; overflow-x: auto; margin-top: 10px;
+    }
+
+    .bottom-info { margin-top: 14px; font-size: 11px; color: #627787; line-height: 1.6; }
+    .bottom-info code { background: #152230; padding: 2px 6px; border-radius: 4px; color: var(--mint); }
+
+    @media (max-width: 960px) {
+      .stage-grid { grid-template-columns: 1fr; }
+      .canvas-wrap { min-height: 360px; }
+    }
+  </style>
 </head>
-
 <body>
-  <p>สำหรับ BT</p>
-  <button onclick="connect()">Connect ESP32 BT</button>
-  <button onclick="sendData('ON')">ON</button>
-  <button onclick="sendData('OFF')">OFF</button>
+  <main class="shell">
+    <!-- Header -->
+    <header class="topline">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">↻</div>
+        <div>
+          <h1>PlanKO · IMU 3D Monitor & Dataset AI Suite</h1>
+          <p class="subtitle">ระบบวิเคราะห์ท่าทาง IMU 20Hz · บันทึก Dataset & จำแนกด้วย Machine Learning</p>
+        </div>
+      </div>
+      <div class="status-badge">
+        <i id="mqttDot" class="status-dot"></i>
+        <span id="mqttStatusText">กำลังเชื่อมต่อ MQTT…</span>
+      </div>
+    </header>
 
-  <p>สำหรับ wifi</p>
-  <button>Connect ESP32 Wifi</button>
-  <button onclick="sendData()">Send WiFi</button>
+    <!-- Toolbar -->
+    <section class="toolbar" aria-label="เครื่องมือและการตั้งค่า">
+      <div class="field">
+        <span>Broker:</span>
+        <input type="text" id="brokerHost" value="broker.emqx.io" readonly style="width:125px; opacity:.8;">
+      </div>
+      <div class="field">
+        <span>Topic:</span>
+        <input type="text" id="topicName" value="planko/imu" readonly style="width:95px; color:var(--mint); font-weight:600;">
+      </div>
+      <div class="field">
+        <span>เลือก Node:</span>
+        <select id="nodeSelect" aria-label="เลือก Node">
+          <option value="1" selected>Node #1 (Spine / Neck)</option>
+          <option value="2">Node #2 (Lower Back)</option>
+          <option value="3">Node #3</option>
+          <option value="4">Node #4</option>
+        </select>
+      </div>
 
-  <script src="index.js"></script>
+      <div class="toolbar-spacer"></div>
+
+      <button id="zeroBtn" class="btn" type="button" title="เซ็ตมุมปัจจุบันเป็น 0°">⌖ เซ็ตศูนย์ (Tare)</button>
+      <button id="pauseBtn" class="btn" type="button">⏸ พักสตรีม</button>
+      <button id="reconnectBtn" class="btn primary" type="button">🔄 ต่อ MQTT ใหม่</button>
+    </section>
+
+    <!-- 3D Visualization & Telemetry Cards -->
+    <div class="stage-grid">
+      <!-- 3D Canvas Box -->
+      <article class="visual-card">
+        <div class="visual-head">
+          <div>
+            <div class="visual-title">ภาพจำลอง 3D Orientation (20Hz)</div>
+            <div class="visual-caption">X: สีแดง (Roll) · Y: สีเขียว (Pitch) · Z: สีน้ำเงิน (Yaw)</div>
+          </div>
+          <div id="sourceLabel" class="source-label">รอข้อมูลจาก planko/imu…</div>
+        </div>
+        <div class="canvas-wrap">
+          <canvas id="scene" width="900" height="520" role="img" aria-label="3D Orientation IMU Canvas"></canvas>
+          <div class="canvas-hint">แกนพิกัดโลกคงที่ (World Frame) มุมล่างซ้าย</div>
+        </div>
+      </article>
+
+      <!-- Side Details Stack -->
+      <div class="side-stack">
+        <!-- Angles & Rate Card -->
+        <aside class="side-card">
+          <div class="side-heading">
+            <span>มุมการเอียง (Euler Angles)</span>
+            <span class="sensor-pill" id="sensorPill">Node #1</span>
+          </div>
+          <div class="angle-list">
+            <div class="angle-row">
+              <div class="angle-name"><i class="axis-dot axis-x"></i>Roll (เอียงข้าง)</div>
+              <div><span class="angle-val" id="rollValue">0.0</span><span class="angle-unit">°</span></div>
+            </div>
+            <div class="angle-row">
+              <div class="angle-name"><i class="axis-dot axis-y"></i>Pitch (ก้ม/เงย)</div>
+              <div><span class="angle-val" id="pitchValue">0.0</span><span class="angle-unit">°</span></div>
+            </div>
+            <div class="angle-row">
+              <div class="angle-name"><i class="axis-dot axis-z"></i>Yaw (หันซ้าย/ขวา)</div>
+              <div><span class="angle-val" id="yawValue">0.0</span><span class="angle-unit">°</span></div>
+            </div>
+          </div>
+
+          <!-- Accelerometer -->
+          <div class="side-heading" style="margin-top: 14px; margin-bottom: 6px; font-size: 13px;">
+            <strong>ความเร่ง Accelerometer</strong>
+            <span id="accelUnit">m/s²</span>
+          </div>
+          <div class="vector-row">
+            <div class="vector-cell"><small>AX</small><b id="axValue">—</b></div>
+            <div class="vector-cell"><small>AY</small><b id="ayValue">—</b></div>
+            <div class="vector-cell"><small>AZ</small><b id="azValue">—</b></div>
+          </div>
+
+          <!-- Stream Meta -->
+          <div style="display: flex; justify-content: space-between; margin-top: 12px; font-size: 11px; color: var(--muted);">
+            <span>ความถี่: <b id="fpsText" style="color:var(--mint);">0.0 Hz</b></span>
+            <span>Seq: <b id="seqText" style="color:var(--text);">—</b></span>
+            <span>Uptime: <b id="uptimeText" style="color:var(--text);">—</b></span>
+          </div>
+        </aside>
+
+        <!-- Pressure Sensor Card (Real Sensor) -->
+        <aside class="side-card">
+          <div class="side-heading">
+            <span>เซนเซอร์วัดแรงกด (Pressure Sensor)</span>
+            <span class="badge-press" id="pressBadge">RELEASED</span>
+          </div>
+
+          <div style="display:flex; justify-content:space-between; align-items:baseline; margin-top:6px;">
+            <span style="color:var(--muted); font-size:12px;">Analog ADC Raw:</span>
+            <span style="font-size:22px; font-weight:750; font-variant-numeric:tabular-nums;" id="pressRaw">0</span>
+          </div>
+
+          <div class="pressure-meter">
+            <div class="pressure-fill" id="pressFill"></div>
+          </div>
+
+          <div class="pressure-status">
+            <span style="color:var(--muted);">Voltage: <b id="pressVolt" style="color:var(--text);">0.00 V</b></span>
+            <span style="color:var(--muted);">ช่วงสเกล: <b>0 - 4095 (12-bit)</b></span>
+          </div>
+        </aside>
+      </div>
+    </div>
+
+    <!-- ============================================================================== -->
+    <!-- DATASET RECORDER & MACHINE LEARNING SUITE -->
+    <!-- ============================================================================== -->
+    <section class="suite-card" aria-label="Dataset & AI Machine Learning Suite">
+      <div class="suite-tabs">
+        <button class="tab-btn active" data-tab="tab-record" type="button">📂 บันทึกชุดข้อมูล Dataset (CSV Recorder)</button>
+        <button class="tab-btn" data-tab="tab-ai" type="button">🧠 ทดสอบโมเดล AI (Live Model Inference)</button>
+        <button class="tab-btn" data-tab="tab-cli" type="button">📖 คำสั่ง Train & Serve โมเดล (CLI Guide)</button>
+      </div>
+
+      <!-- Tab 1: Dataset Recorder -->
+      <div id="tab-record" class="tab-pane active">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+          <div>
+            <strong style="font-size:15px;">บันทึกข้อมูลท่าทาง (IMU Dataset Recorder)</strong>
+            <p style="margin:2px 0 0; color:var(--muted); font-size:12px;">สตรีม 20Hz ผ่าน MQTT/BLE บันทึกตรงเป็นไฟล์ CSV มาตรฐานพร้อมใช้ฝึก Model ได้ทันที</p>
+          </div>
+          <span id="recStatusPill" class="rec-badge">พร้อมบันทึก (Ready)</span>
+        </div>
+
+        <!-- Form Grid -->
+        <div class="rec-grid">
+          <label class="rec-field">ตำแหน่งติดเซนเซอร์ (Mount Site)
+            <select id="recSiteSelect"></select>
+          </label>
+          <label class="rec-field">ส่วนของร่างกาย (Body Part)
+            <select id="recBodyPartSelect"></select>
+          </label>
+          <label class="rec-field">ท่าทาง (Action Label)
+            <select id="recActionSelect"></select>
+          </label>
+          <label class="rec-field">ผู้ทดสอบ (Subject ID)
+            <input type="text" id="recSubjectId" value="P01" maxlength="30">
+          </label>
+          <label class="rec-field">Session ID
+            <input type="text" id="recSessionId" value="S01" maxlength="30">
+          </label>
+          <label class="rec-field">Trial ID
+            <input type="text" id="recTrialId" value="trial-01" maxlength="30">
+          </label>
+          <label class="rec-field">ข้าง (Side)
+            <select id="recSideSelect">
+              <option value="right">ขวา (Right)</option>
+              <option value="left">ซ้าย (Left)</option>
+              <option value="unknown" selected>กึ่งกลาง / ไม่ระบุ (Center/Unknown)</option>
+            </select>
+          </label>
+        </div>
+
+        <!-- Phase Selector Bar -->
+        <div class="phase-bar">
+          <span style="font-size:12px; color:var(--muted); margin-right:4px;">Phase ปัจจุบัน:</span>
+          <button class="phase-btn active" data-phase="neutral" type="button">neutral (ปกติ)</button>
+          <button class="phase-btn" data-phase="approaching" type="button">approaching (กำลังเข้าท่า)</button>
+          <button class="phase-btn" data-phase="holding" type="button">holding (ค้างในท่า)</button>
+          <button class="phase-btn" data-phase="returning" type="button">returning (กำลังกลับ)</button>
+          <span id="currentPhaseLabel" style="font-size:12px; color:var(--mint); margin-left:auto; font-weight:700;">Phase: neutral</span>
+        </div>
+
+        <!-- Guided Phase Timer Box -->
+        <div class="guided-box">
+          <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+            <input type="checkbox" id="guidedTimerCheck" checked>
+            <b>ใช้ตัวช่วยนำจังหวะอัตโนมัติ (Guided Phase Timer)</b> พร้อมเสียงแจ้งเตือน Beep
+          </label>
+          <p style="margin:4px 0 0; color:var(--muted); font-size:11px;">
+            ลำดับเริ่มต้น: neutral 3s → approaching 3s → holding 5s → returning 3s → neutral 2s (ระบบจะเปลี่ยน Phase และจบให้อัตโนมัติ)
+          </p>
+          <div class="guided-progress-wrap">
+            <div id="guidedProgressBar" class="guided-progress-bar"></div>
+          </div>
+          <div id="guidedText" style="margin-top:6px; font-size:11px; color:var(--text); font-variant-numeric:tabular-nums;">
+            เวลานำจังหวะ: รอเริ่มการบันทึก
+          </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="rec-actions">
+          <button id="recStartBtn" class="btn primary" type="button">🔴 เริ่มบันทึก (Start Recording)</button>
+          <button id="recStopBtn" class="btn danger" type="button" disabled>⏹ หยุดและดาวน์โหลด CSV (Stop & Save)</button>
+          <button id="recClearBtn" class="btn" type="button">ล้างรายการ</button>
+          <span id="sampleCounterText" style="margin-left:auto; font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums;">0 ตัวอย่าง (0.0s)</span>
+        </div>
+
+        <!-- Download List -->
+        <div id="recDownloadList" class="download-list"></div>
+      </div>
+
+      <!-- Tab 2: AI Live Model Inspector -->
+      <div id="tab-ai" class="tab-pane">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+          <div>
+            <strong style="font-size:15px;">ทดสอบผลการทำนายด้วย AI โมเดลสด (Live Pose Classifier)</strong>
+            <p style="margin:2px 0 0; color:var(--muted); font-size:12px;">เชื่อมต่อไปยัง Local Inference Server (พอร์ต 8765) จาก <code>tools/serve_model.py</code></p>
+          </div>
+          <span id="aiServerBadge" class="rec-badge">ตรวจสอบสถานะเซิร์ฟเวอร์…</span>
+        </div>
+
+        <div style="display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:14px;">
+          <label class="field">Inference Host:
+            <input type="text" id="aiHost" value="http://127.0.0.1:8765" style="width:180px;">
+          </label>
+          <button id="aiToggleBtn" class="btn primary" type="button">▶ เริ่มตรวจจับสด (Live Inference)</button>
+          <a href="../model_test.html" target="_blank" class="btn" style="text-decoration:none;">↗ เปิดหน้า Model Testbench เต็มรูปแบบ</a>
+        </div>
+
+        <div class="ai-grid">
+          <div class="ai-card">
+            <small>ท่าทางที่ทำนาย (Predicted Action)</small>
+            <strong id="aiOutAction" style="color:var(--mint);">—</strong>
+          </div>
+          <div class="ai-card">
+            <small>ส่วนของร่างกาย (Body Part)</small>
+            <strong id="aiOutBody">—</strong>
+          </div>
+          <div class="ai-card">
+            <small>ช่วงการเคลื่อนไหว (Movement Stage)</small>
+            <strong id="aiOutStage" style="color:var(--blue);">—</strong>
+          </div>
+          <div class="ai-card">
+            <small>ความมั่นใจ (Confidence Score)</small>
+            <strong id="aiOutScore">—</strong>
+          </div>
+          <div class="ai-card">
+            <small>เวลาที่ค้างในท่า (Held Time)</small>
+            <strong id="aiOutHeld">0 ms</strong>
+          </div>
+          <div class="ai-card">
+            <small>สถานะ Calibration / โมเดล</small>
+            <strong id="aiOutCal" style="font-size:13px;">—</strong>
+          </div>
+        </div>
+
+        <p id="aiReasonText" style="margin-top:10px; font-size:12px; color:var(--muted);">
+          เปิดรันเซิร์ฟเวอร์ด้วย <code>python tools/serve_model.py --port 8765</code> เพื่อเริ่มตรวจจับท่าทางแบบ Real-time
+        </p>
+      </div>
+
+      <!-- Tab 3: CLI Guide -->
+      <div id="tab-cli" class="tab-pane">
+        <strong style="font-size:15px;">คู่มือการติดตั้งและ Train โมเดลด้วย Python CLI</strong>
+        <p style="margin:4px 0 8px; color:var(--muted); font-size:12px;">ทำตาม 3 ขั้นตอนดังนี้เพื่อสร้าง AI ตรวจจับท่าทางจากไฟล์ CSV ที่บันทึก:</p>
+
+        <div style="margin-top:12px;">
+          <b style="font-size:13px; color:var(--mint);">1. ติดตั้ง Library สำหรับ Machine Learning:</b>
+          <div class="code-box">pip install -r requirements-ml.txt</div>
+        </div>
+
+        <div style="margin-top:14px;">
+          <b style="font-size:13px; color:var(--mint);">2. สั่ง Train โมเดลด้วยข้อมูล CSV (Random Forest / SVM Classifier):</b>
+          <div class="code-box">python tools/train_model.py whist/*.csv --window 1.0 --output models/pose_model</div>
+        </div>
+
+        <div style="margin-top:14px;">
+          <b style="font-size:13px; color:var(--mint);">3. เปิด Local Inference API Server เพื่อตรวจจับสดหรือ Replay:</b>
+          <div class="code-box">python tools/serve_model.py --model models/pose_model/model_bundle.joblib --port 8765</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Bottom Note -->
+    <p class="bottom-info">
+      💡 โครงสร้างชุดข้อมูลและโมเดลอิงตามสถาปัตยกรรม <code>Arduino Ble 33 / PlanKO</code> โดยดึงคุณลักษณะ (Features) ความถี่ 20Hz 
+      ครอบคลุม Mean, Std, RMS, Range, Slope, Vector Magnitude และ Mount-Site Isolation เพื่อให้โมเดลแยกแยะท่าทางได้อย่างแม่นยำ
+    </p>
+  </main>
+
+  <script>
+    "use strict";
+
+    // DOM Elements
+    const $ = (id) => document.getElementById(id);
+    const canvas = $("scene");
+    const ctx = canvas.getContext("2d");
+    const mqttDot = $("mqttDot");
+    const mqttStatusText = $("mqttStatusText");
+    const nodeSelect = $("nodeSelect");
+    const zeroBtn = $("zeroBtn");
+    const pauseBtn = $("pauseBtn");
+    const reconnectBtn = $("reconnectBtn");
+    const sourceLabel = $("sourceLabel");
+    const sensorPill = $("sensorPill");
+    const rollValue = $("rollValue");
+    const pitchValue = $("pitchValue");
+    const yawValue = $("yawValue");
+    const axValue = $("axValue");
+    const ayValue = $("ayValue");
+    const azValue = $("azValue");
+    const pressRaw = $("pressRaw");
+    const pressVolt = $("pressVolt");
+    const pressFill = $("pressFill");
+    const pressBadge = $("pressBadge");
+    const fpsText = $("fpsText");
+    const seqText = $("seqText");
+    const uptimeText = $("uptimeText");
+
+    const DEG = Math.PI / 180;
+    let mqttClient = null;
+    let isPaused = false;
+    let selectedNodeId = 1;
+
+    // Orientation state with tare offsets
+    let tareRoll = 0, tarePitch = 0, tareYaw = 0;
+    let targetRoll = 0, targetPitch = 0, targetYaw = 0;
+    let currentRoll = 0, currentPitch = 0, currentYaw = 0;
+
+    // FPS / Rate measurement
+    let packetCount = 0;
+    let lastFpsCalcTime = Date.now();
+    let currentFps = 0;
+
+    // -------------------------------------------------------------
+    // POSE & TAXONOMY CONFIG (From pose_labels.json)
+    // -------------------------------------------------------------
+    const POSE_TAXONOMY = {
+      mount_sites: {
+        wrist: "หลังมือ / ข้อมือ (wrist)",
+        neck: "ลำคอ (neck)",
+        lumbar: "หลังส่วนล่าง / เอว (lumbar)",
+        pelvis: "เชิงกราน / สะโพก (pelvis)",
+        chest: "หน้าอก (chest)",
+        head: "ศีรษะ (head)",
+        right_forearm: "ท่อนแขนขวา (right_forearm)",
+        left_forearm: "ท่อนแขนซ้าย (left_forearm)",
+        right_upper_arm: "ต้นแขนขวา (right_upper_arm)",
+        left_upper_arm: "ต้นแขนซ้าย (left_upper_arm)",
+        other: "อื่นๆ (other)"
+      },
+      body_parts: {
+        neck: {
+          label: "ลำคอ (Neck)",
+          actions: [
+            { id: "neck_neutral", label: "คอตรงปกติ (neutral)" },
+            { id: "neck_flexion", label: "ก้มคอ (flexion)" },
+            { id: "neck_extension", label: "เงยคอ (extension)" },
+            { id: "neck_lateral_flexion_left", label: "เอียงคอซ้าย (lateral_left)" },
+            { id: "neck_lateral_flexion_right", label: "เอียงคอขวา (lateral_right)" }
+          ]
+        },
+        lumbar: {
+          label: "หลัง / เอว (Lumbar Spine)",
+          actions: [
+            { id: "lumbar_neutral", label: "หลังตรงปกติ (neutral)" },
+            { id: "lumbar_flexion", label: "ก้มหลัง / หลังโก่ง (flexion)" },
+            { id: "lumbar_extension", label: "แอ่นหลัง (extension)" },
+            { id: "lumbar_lateral_flexion_left", label: "เอียงตัวซ้าย (lateral_left)" },
+            { id: "lumbar_lateral_flexion_right", label: "เอียงตัวขวา (lateral_right)" }
+          ]
+        },
+        wrist: {
+          label: "ข้อมือ (Wrist)",
+          actions: [
+            { id: "wrist_neutral", label: "วางปกติ (neutral)" },
+            { id: "wrist_up", label: "งัดขึ้น (wrist_up)" },
+            { id: "wrist_down", label: "งัดลง (wrist_down)" }
+          ]
+        },
+        pelvis: {
+          label: "เชิงกราน (Pelvis)",
+          actions: [
+            { id: "pelvis_neutral", label: "เชิงกรานปกติ (neutral)" },
+            { id: "pelvis_anterior_tilt", label: "กระดกหน้า (anterior_tilt)" },
+            { id: "pelvis_posterior_tilt", label: "กระดกหลัง (posterior_tilt)" }
+          ]
+        },
+        elbow: {
+          label: "ข้อศอก (Elbow)",
+          actions: [
+            { id: "elbow_raise_arm", label: "ยกแขน" },
+            { id: "elbow_release_arm", label: "ปล่อยแขน" }
+          ]
+        }
+      }
+    };
+
+    // Populate Select Dropdowns
+    const recSiteSelect = $("recSiteSelect");
+    const recBodyPartSelect = $("recBodyPartSelect");
+    const recActionSelect = $("recActionSelect");
+
+    Object.entries(POSE_TAXONOMY.mount_sites).forEach(([k, v]) => {
+      const opt = document.createElement("option");
+      opt.value = k; opt.textContent = v;
+      recSiteSelect.appendChild(opt);
+    });
+
+    Object.entries(POSE_TAXONOMY.body_parts).forEach(([k, v]) => {
+      const opt = document.createElement("option");
+      opt.value = k; opt.textContent = v.label;
+      recBodyPartSelect.appendChild(opt);
+    });
+
+    function updateActionDropdown() {
+      const selectedBody = recBodyPartSelect.value;
+      recActionSelect.innerHTML = "";
+      const actions = POSE_TAXONOMY.body_parts[selectedBody]?.actions || [];
+      actions.forEach(act => {
+        const opt = document.createElement("option");
+        opt.value = act.id; opt.textContent = act.label;
+        recActionSelect.appendChild(opt);
+      });
+      // Set default mount site matching body part if available
+      if (POSE_TAXONOMY.mount_sites[selectedBody]) {
+        recSiteSelect.value = selectedBody;
+      }
+    }
+    recBodyPartSelect.addEventListener("change", updateActionDropdown);
+    recBodyPartSelect.value = "neck";
+    updateActionDropdown();
+
+    // -------------------------------------------------------------
+    // DATASET RECORDING LOGIC
+    // -------------------------------------------------------------
+    let isRecording = false;
+    let recordedSamples = [];
+    let recordStartTime = 0;
+    let currentPhase = "neutral";
+    let guidedStepIndex = 0;
+    let guidedTimerId = null;
+    let audioCtx = null;
+
+    const GUIDED_SEQUENCE = [
+      { phase: "neutral", duration: 3.0 },
+      { phase: "approaching", duration: 3.0 },
+      { phase: "holding", duration: 5.0 },
+      { phase: "returning", duration: 3.0 },
+      { phase: "neutral", duration: 2.0 }
+    ];
+
+    function playBeep(freq = 880, duration = 0.12) {
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.frequency.value = freq;
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+        osc.start();
+        osc.stop(audioCtx.currentTime + duration);
+      } catch(e) {}
+    }
+
+    // Phase Selection buttons
+    const phaseBtns = document.querySelectorAll(".phase-btn");
+    phaseBtns.forEach(btn => {
+      btn.addEventListener("click", () => {
+        setPhase(btn.dataset.phase);
+      });
+    });
+
+    function setPhase(phase) {
+      currentPhase = phase;
+      phaseBtns.forEach(b => b.classList.toggle("active", b.dataset.phase === phase));
+      $("currentPhaseLabel").textContent = "Phase: " + phase;
+    }
+
+    // Tabs logic
+    const tabBtns = document.querySelectorAll(".tab-btn");
+    tabBtns.forEach(btn => {
+      btn.addEventListener("click", () => {
+        tabBtns.forEach(b => b.classList.remove("active"));
+        document.querySelectorAll(".tab-pane").forEach(p => p.classList.remove("active"));
+        btn.classList.add("active");
+        $(btn.dataset.tab).classList.add("active");
+      });
+    });
+
+    // Start / Stop Recording
+    const recStartBtn = $("recStartBtn");
+    const recStopBtn = $("recStopBtn");
+    const recStatusPill = $("recStatusPill");
+    const sampleCounterText = $("sampleCounterText");
+    const guidedTimerCheck = $("guidedTimerCheck");
+    const guidedProgressBar = $("guidedProgressBar");
+    const guidedText = $("guidedText");
+
+    recStartBtn.addEventListener("click", () => {
+      isRecording = true;
+      recordedSamples = [];
+      recordStartTime = Date.now();
+      recStartBtn.disabled = true;
+      recStopBtn.disabled = false;
+      recStatusPill.className = "rec-badge recording";
+      recStatusPill.textContent = "● กำลังบันทึก (Recording)";
+      playBeep(660, 0.2);
+
+      if (guidedTimerCheck.checked) {
+        startGuidedSequence();
+      }
+    });
+
+    recStopBtn.addEventListener("click", () => {
+      stopRecordingAndExport();
+    });
+
+    function startGuidedSequence() {
+      guidedStepIndex = 0;
+      let totalTime = GUIDED_SEQUENCE.reduce((a, b) => a + b.duration, 0);
+      let stepStartTime = Date.now();
+
+      function updateGuided() {
+        if (!isRecording) return;
+        const now = Date.now();
+        const currentStep = GUIDED_SEQUENCE[guidedStepIndex];
+        const stepElapsed = (now - stepStartTime) / 1000;
+        const stepRemaining = Math.max(0, currentStep.duration - stepElapsed);
+
+        if (currentPhase !== currentStep.phase) {
+          setPhase(currentStep.phase);
+          playBeep(880, 0.15);
+        }
+
+        const totalElapsed = (now - recordStartTime) / 1000;
+        const progress = Math.min(100, (totalElapsed / totalTime) * 100);
+        guidedProgressBar.style.width = progress.toFixed(1) + "%";
+        guidedText.textContent = `ช่วงที่ ${guidedStepIndex + 1}/${GUIDED_SEQUENCE.length}: [${currentStep.phase}] เหลือ ${stepRemaining.toFixed(1)} วิ (ทั้งหมด ${totalElapsed.toFixed(1)}s / ${totalTime}s)`;
+
+        if (stepRemaining <= 0) {
+          guidedStepIndex++;
+          stepStartTime = Date.now();
+          if (guidedStepIndex >= GUIDED_SEQUENCE.length) {
+            playBeep(1100, 0.3);
+            stopRecordingAndExport();
+            return;
+          }
+        }
+        guidedTimerId = setTimeout(updateGuided, 100);
+      }
+      updateGuided();
+    }
+
+    function stopRecordingAndExport() {
+      isRecording = false;
+      if (guidedTimerId) clearTimeout(guidedTimerId);
+      recStartBtn.disabled = false;
+      recStopBtn.disabled = true;
+      recStatusPill.className = "rec-badge";
+      recStatusPill.textContent = "บันทึกเสร็จสิ้น (Done)";
+      guidedProgressBar.style.width = "100%";
+      guidedText.textContent = "บันทึกเสร็จสมบูรณ์";
+
+      if (recordedSamples.length === 0) {
+        alert("ไม่พบตัวอย่างข้อมูล IMU ระหว่างบันทึก กรุณาตรวจสอบสถานะการเชื่อมต่อ MQTT/Node");
+        return;
+      }
+
+      // Generate Standard CSV
+      const columns = [
+        "sensor_uid", "mount_site", "body_part", "side", "subject_id", "session_id", "trial_id",
+        "action_label", "phase_label", "phase_annotation_reviewed", "host_time_iso", "host_time_s",
+        "boot_ms", "seq", "accel_x", "accel_y", "accel_z", "gyro_x", "gyro_y", "gyro_z",
+        "roll_deg", "pitch_deg", "yaw_deg", "calibrated", "valid", "firmware_status"
+      ];
+
+      const lines = [columns.join(",")];
+      recordedSamples.forEach(row => {
+        const line = columns.map(col => {
+          let val = row[col];
+          if (val === undefined || val === null) return "";
+          val = String(val);
+          if (val.includes(",") || val.includes('"')) {
+            val = '"' + val.replace(/"/g, '""') + '"';
+          }
+          return val;
+        }).join(",");
+        lines.push(line);
+      });
+
+      const csvContent = "\uFEFF" + lines.join("\r\n");
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+
+      const subject = $("recSubjectId").value.trim() || "P01";
+      const site = recSiteSelect.value;
+      const action = recActionSelect.value;
+      const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+      const filename = `${subject}_${site}_${action}_${dateStr}.csv`;
+
+      // Create download link element
+      const link = document.createElement("a");
+      link.className = "csv-link";
+      link.href = url;
+      link.download = filename;
+      link.innerHTML = `<span>📥 <b>${filename}</b> (${recordedSamples.length.toLocaleString()} ตัวอย่าง)</span> <span style="color:var(--text); font-size:11px;">คลิกเพื่อดาวน์โหลด</span>`;
+      $("recDownloadList").prepend(link);
+
+      // Trigger immediate download
+      const tempA = document.createElement("a");
+      tempA.href = url;
+      tempA.download = filename;
+      document.body.appendChild(tempA);
+      tempA.click();
+      document.body.removeChild(tempA);
+    }
+
+    $("recClearBtn").addEventListener("click", () => {
+      $("recDownloadList").innerHTML = "";
+      sampleCounterText.textContent = "0 ตัวอย่าง (0.0s)";
+      recStatusPill.className = "rec-badge";
+      recStatusPill.textContent = "พร้อมบันทึก (Ready)";
+    });
+
+    // -------------------------------------------------------------
+    // AI MODEL LIVE INFERENCE (Connecting to serve_model.py:8765)
+    // -------------------------------------------------------------
+    let aiPolling = false;
+    let aiTimerId = null;
+
+    $("aiToggleBtn").addEventListener("click", () => {
+      aiPolling = !aiPolling;
+      if (aiPolling) {
+        $("aiToggleBtn").textContent = "⏸ หยุดตรวจจับ";
+        $("aiToggleBtn").className = "btn danger";
+        pollAiServer();
+      } else {
+        $("aiToggleBtn").textContent = "▶ เริ่มตรวจจับสด (Live Inference)";
+        $("aiToggleBtn").className = "btn primary";
+        if (aiTimerId) clearTimeout(aiTimerId);
+      }
+    });
+
+    async function pollAiServer() {
+      if (!aiPolling) return;
+      const host = $("aiHost").value.trim().replace(/\/$/, "");
+      const site = recSiteSelect.value;
+      const body = recBodyPartSelect.value;
+
+      try {
+        const res = await fetch(`${host}/api/live?mount_site=${site}&body_part=${body}&ip=192.168.1.4`, { signal: AbortSignal.timeout(1500) });
+        if (res.ok) {
+          const data = await res.json();
+          $("aiServerBadge").className = "rec-badge";
+          $("aiServerBadge").style.color = "var(--mint)";
+          $("aiServerBadge").textContent = "● เซิร์ฟเวอร์ออนไลน์ (Online)";
+
+          $("aiOutAction").textContent = data.action || "unknown";
+          $("aiOutBody").textContent = data.body_part || body;
+          $("aiOutStage").textContent = data.stage || "unknown";
+          $("aiOutScore").textContent = data.score != null ? (data.score * 100).toFixed(1) + "%" : "—";
+          $("aiOutHeld").textContent = (data.held_ms || 0) + " ms";
+          $("aiOutCal").textContent = data.calibrated ? "Calibrated (Ready)" : "Uncalibrated";
+          $("aiReasonText").textContent = data.reason ? `สถานะโมเดล: ${data.reason}` : "";
+        } else {
+          $("aiServerBadge").className = "rec-badge";
+          $("aiServerBadge").style.color = "var(--orange)";
+          $("aiServerBadge").textContent = `HTTP ${res.status}`;
+        }
+      } catch (err) {
+        $("aiServerBadge").className = "rec-badge";
+        $("aiServerBadge").style.color = "var(--red)";
+        $("aiServerBadge").textContent = "ออฟไลน์ (Offline - ตรวจสอบพอร์ต 8765)";
+      }
+      aiTimerId = setTimeout(pollAiServer, 200);
+    }
+
+    // -------------------------------------------------------------
+    // MQTT CONNECTION LOGIC
+    // -------------------------------------------------------------
+    function connectMqtt() {
+      const broker = "broker.emqx.io";
+      const port = 8084;
+      const clientId = "PlanKO_Web_" + Math.random().toString(16).substr(2, 8);
+
+      setMqttStatus("connecting", "กำลังเชื่อมต่อ broker.emqx.io:8084...");
+      mqttClient = new Paho.MQTT.Client(broker, port, "/mqtt", clientId);
+
+      const options = {
+        useSSL: true,
+        timeout: 6,
+        keepAliveInterval: 30,
+        cleanSession: true,
+        onSuccess: () => {
+          console.log("MQTT Connected! Subscribing to planko/imu...");
+          setMqttStatus("online", "เชื่อมต่อ broker.emqx.io สำเร็จ (WSS 8084)");
+          mqttClient.subscribe("planko/imu", { qos: 0 });
+          sourceLabel.textContent = "รับข้อมูลจาก Topic: planko/imu (20Hz)";
+        },
+        onFailure: (err) => {
+          console.error("MQTT Connect failed (SSL), trying non-SSL port 8083:", err);
+          fallbackToWs(clientId);
+        }
+      };
+
+      try {
+        mqttClient.connect(options);
+      } catch (e) {
+        console.error("MQTT Init error:", e);
+        setMqttStatus("offline", "เชื่อมต่อไม่สำเร็จ");
+      }
+    }
+
+    function fallbackToWs(clientId) {
+      setMqttStatus("connecting", "ลองเชื่อมต่อผ่านพอร์ต 8083 (WS)...");
+      mqttClient = new Paho.MQTT.Client("broker.emqx.io", 8083, "/mqtt", clientId);
+      mqttClient.connect({
+        useSSL: false,
+        timeout: 6,
+        cleanSession: true,
+        onSuccess: () => {
+          setMqttStatus("online", "เชื่อมต่อ broker.emqx.io:8083 (WS) สำเร็จ");
+          mqttClient.subscribe("planko/imu", { qos: 0 });
+          sourceLabel.textContent = "รับข้อมูลจาก Topic: planko/imu (20Hz)";
+        },
+        onFailure: () => {
+          setMqttStatus("offline", "เชื่อมต่อไม่สำเร็จ (ลองใหม่ใน 4 วิ)");
+          setTimeout(connectMqtt, 4000);
+        }
+      });
+    }
+
+    function setMqttStatus(state, text) {
+      mqttDot.className = "status-dot " + (state === "online" ? "online" : state === "offline" ? "offline" : "");
+      mqttStatusText.textContent = text;
+    }
+
+    // --- Process planko/imu JSON Payload ---
+    function handleImuMessage(jsonStr) {
+      try {
+        const data = JSON.parse(jsonStr);
+        if (data.type !== "imu_stream") return;
+
+        // Calculate rate (Hz)
+        packetCount++;
+        const now = Date.now();
+        if (now - lastFpsCalcTime >= 1000) {
+          currentFps = (packetCount * 1000) / (now - lastFpsCalcTime);
+          fpsText.textContent = currentFps.toFixed(1) + " Hz";
+          packetCount = 0;
+          lastFpsCalcTime = now;
+        }
+
+        // Gateway uptime
+        if (data.gateway && data.gateway.uptimeMs) {
+          const sec = Math.floor(data.gateway.uptimeMs / 1000);
+          uptimeText.textContent = `${Math.floor(sec / 60)}m ${sec % 60}s`;
+        }
+
+        // Pressure Sensor
+        if (data.pressure) {
+          const raw = data.pressure.raw || 0;
+          const volt = data.pressure.voltage || 0;
+          const isPressed = !!data.pressure.pressed;
+
+          pressRaw.textContent = raw.toLocaleString();
+          pressVolt.textContent = volt.toFixed(2) + " V";
+          const percent = Math.min(100, Math.max(0, (raw / 4095) * 100));
+          pressFill.style.width = percent.toFixed(1) + "%";
+          pressBadge.className = isPressed ? "badge-press active" : "badge-press";
+          pressBadge.textContent = isPressed ? "PRESSED" : "RELEASED";
+        }
+
+        // Process Nodes
+        if (Array.isArray(data.nodes)) {
+          const node = data.nodes.find(n => n.nodeId === selectedNodeId) || data.nodes[0];
+          if (node) {
+            targetRoll = (node.roll || 0) - tareRoll;
+            targetPitch = (node.pitch || 0) - tarePitch;
+            targetYaw = (node.yaw || 0) - tareYaw;
+
+            rollValue.textContent = targetRoll.toFixed(1);
+            pitchValue.textContent = targetPitch.toFixed(1);
+            yawValue.textContent = targetYaw.toFixed(1);
+
+            let ax = 0, ay = 0, az = 0;
+            if (node.accel && Array.isArray(node.accel) && node.accel.length >= 3) {
+              ax = node.accel[0]; ay = node.accel[1]; az = node.accel[2];
+              axValue.textContent = ax.toFixed(2);
+              ayValue.textContent = ay.toFixed(2);
+              azValue.textContent = az.toFixed(2);
+            }
+
+            let gx = 0, gy = 0, gz = 0;
+            if (node.gyro && Array.isArray(node.gyro) && node.gyro.length >= 3) {
+              gx = node.gyro[0]; gy = node.gyro[1]; gz = node.gyro[2];
+            }
+
+            seqText.textContent = node.seq || "—";
+            sensorPill.textContent = node.isMock ? `Node #${node.nodeId} (Mock)` : `Node #${node.nodeId} (Real IMU)`;
+
+            // Accumulate Dataset Sample if recording
+            if (isRecording) {
+              const sample = {
+                sensor_uid: `node_${node.nodeId}`,
+                mount_site: recSiteSelect.value,
+                body_part: recBodyPartSelect.value,
+                side: $("recSideSelect").value,
+                subject_id: $("recSubjectId").value.trim() || "P01",
+                session_id: $("recSessionId").value.trim() || "S01",
+                trial_id: $("recTrialId").value.trim() || "trial-01",
+                action_label: recActionSelect.value,
+                phase_label: currentPhase,
+                phase_annotation_reviewed: true,
+                host_time_iso: new Date().toISOString(),
+                host_time_s: (now / 1000).toFixed(4),
+                boot_ms: node.ts || 0,
+                seq: node.seq || 0,
+                accel_x: ax,
+                accel_y: ay,
+                accel_z: az,
+                gyro_x: gx,
+                gyro_y: gy,
+                gyro_z: gz,
+                roll_deg: (node.roll || 0).toFixed(2),
+                pitch_deg: (node.pitch || 0).toFixed(2),
+                yaw_deg: (node.yaw || 0).toFixed(2),
+                calibrated: !node.isMock,
+                valid: true,
+                firmware_status: "online"
+              };
+              recordedSamples.push(sample);
+              const elapsedSec = ((now - recordStartTime) / 1000).toFixed(1);
+              sampleCounterText.textContent = `${recordedSamples.length.toLocaleString()} ตัวอย่าง (${elapsedSec}s)`;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("JSON parse error:", err);
+      }
+    }
+
+    // --- Event Listeners ---
+    zeroBtn.addEventListener("click", () => {
+      tareRoll += targetRoll;
+      tarePitch += targetPitch;
+      tareYaw += targetYaw;
+      targetRoll = 0; targetPitch = 0; targetYaw = 0;
+      currentRoll = 0; currentPitch = 0; currentYaw = 0;
+    });
+
+    pauseBtn.addEventListener("click", () => {
+      isPaused = !isPaused;
+      pauseBtn.textContent = isPaused ? "▶ เล่นต่อ" : "⏸ พักสตรีม";
+      pauseBtn.style.color = isPaused ? "var(--mint)" : "var(--text)";
+    });
+
+    reconnectBtn.addEventListener("click", connectMqtt);
+
+    nodeSelect.addEventListener("change", (e) => {
+      selectedNodeId = parseInt(e.target.value, 10);
+      tareRoll = 0; tarePitch = 0; tareYaw = 0;
+    });
+
+    // -------------------------------------------------------------
+    // 3D RENDERING PIPELINE (Canvas Isometric Projection)
+    // -------------------------------------------------------------
+    function rotateEuler(v, r, p, y) {
+      const cr = Math.cos(r), sr = Math.sin(r);
+      const cp = Math.cos(p), sp = Math.sin(p);
+      const cy = Math.cos(y), sy = Math.sin(y);
+
+      const x1 = cy * v[0] - sy * v[1];
+      const y1 = sy * v[0] + cy * v[1];
+      const z1 = v[2];
+
+      const x2 = cp * x1 + sp * z1;
+      const y2 = y1;
+      const z2 = -sp * x1 + cp * z1;
+
+      const x3 = x2;
+      const y3 = cr * y2 - sr * z2;
+      const z3 = sr * y2 + cr * z2;
+
+      return [x3, y3, z3];
+    }
+
+    function projectIso(v, cx, cy, scale) {
+      const isoX = (v[0] - v[1]) * 0.866025;
+      const isoY = (v[0] + v[1]) * 0.5 - v[2];
+      return [cx + isoX * scale, cy + isoY * scale];
+    }
+
+    function drawScene() {
+      if (!isPaused) {
+        currentRoll  += (targetRoll  - currentRoll)  * 0.25;
+        currentPitch += (targetPitch - currentPitch) * 0.25;
+        currentYaw   += (targetYaw   - currentYaw)   * 0.25;
+      }
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const w = canvas.width;
+      const h = canvas.height;
+      const cx = w * 0.5;
+      const cy = h * 0.52;
+      const scale = Math.min(w, h) * 0.0022;
+
+      // Draw Grid
+      ctx.strokeStyle = "rgba(25, 42, 56, 0.45)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let x = -200; x <= 200; x += 50) {
+        const p1 = projectIso([x, -200, -80], cx, cy, scale);
+        const p2 = projectIso([x, 200, -80], cx, cy, scale);
+        ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]);
+      }
+      for (let y = -200; y <= 200; y += 50) {
+        const p1 = projectIso([-200, y, -80], cx, cy, scale);
+        const p2 = projectIso([200, y, -80], cx, cy, scale);
+        ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]);
+      }
+      ctx.stroke();
+
+      const rRad = currentRoll * DEG;
+      const pRad = currentPitch * DEG;
+      const yRad = currentYaw * DEG;
+
+      // Board Dimensions
+      const lx = 90, ly = 130, lz = 8;
+      const rawVerts = [
+        [-lx, -ly, -lz], [ lx, -ly, -lz], [ lx,  ly, -lz], [-lx,  ly, -lz],
+        [-lx, -ly,  lz], [ lx, -ly,  lz], [ lx,  ly,  lz], [-lx,  ly,  lz]
+      ];
+      const transVerts = rawVerts.map(v => rotateEuler(v, rRad, pRad, yRad));
+      const projVerts = transVerts.map(v => projectIso(v, cx, cy, scale));
+
+      const faces = [
+        { v: [4, 5, 6, 7], col: "#173024", norm: [0, 0, 1] },
+        { v: [0, 1, 2, 3], col: "#0f1c24", norm: [0, 0, -1] },
+        { v: [0, 1, 5, 4], col: "#12232e", norm: [0, -1, 0] },
+        { v: [2, 3, 7, 6], col: "#12232e", norm: [0, 1, 0] },
+        { v: [1, 2, 6, 5], col: "#152a36", norm: [1, 0, 0] },
+        { v: [0, 3, 7, 4], col: "#152a36", norm: [-1, 0, 0] }
+      ];
+
+      faces.forEach(f => {
+        const normRot = rotateEuler(f.norm, rRad, pRad, yRad);
+        f.depth = normRot[0] * 0.5 + normRot[1] * 0.5 - normRot[2];
+      });
+      faces.sort((a, b) => a.depth - b.depth);
+
+      // Draw Faces
+      faces.forEach(f => {
+        ctx.fillStyle = f.col;
+        ctx.strokeStyle = "rgba(116, 240, 194, 0.4)";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        f.v.forEach((vi, idx) => {
+          const pt = projVerts[vi];
+          if (idx === 0) ctx.moveTo(pt[0], pt[1]);
+          else ctx.lineTo(pt[0], pt[1]);
+        });
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      });
+
+      // Board Axes
+      const axisLen = 130;
+      const axes = [
+        { dir: [axisLen, 0, 0], col: "#ff7777", label: "X" },
+        { dir: [0, axisLen, 0], col: "#74f0c2", label: "Y" },
+        { dir: [0, 0, axisLen], col: "#6ca9ff", label: "Z" }
+      ];
+      const pCenter = projectIso(rotateEuler([0, 0, 0], rRad, pRad, yRad), cx, cy, scale);
+
+      axes.forEach(ax => {
+        const pEnd = projectIso(rotateEuler(ax.dir, rRad, pRad, yRad), cx, cy, scale);
+        ctx.strokeStyle = ax.col;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(pCenter[0], pCenter[1]);
+        ctx.lineTo(pEnd[0], pEnd[1]);
+        ctx.stroke();
+
+        ctx.fillStyle = ax.col;
+        ctx.font = "bold 13px Inter, sans-serif";
+        ctx.fillText(ax.label, pEnd[0] + 6, pEnd[1] + 4);
+      });
+
+      // World Reference Axes in lower-left
+      const wx = 55, wy = h - 55;
+      const wAxes = [
+        { dir: [35, 0, 0], col: "#ff7777", label: "Xw" },
+        { dir: [0, 35, 0], col: "#74f0c2", label: "Yw" },
+        { dir: [0, 0, 35], col: "#6ca9ff", label: "Zw" }
+      ];
+      wAxes.forEach(ax => {
+        const end = projectIso(ax.dir, wx, wy, 0.9);
+        ctx.strokeStyle = ax.col;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(wx, wy);
+        ctx.lineTo(end[0], end[1]);
+        ctx.stroke();
+      });
+
+      requestAnimationFrame(drawScene);
+    }
+
+    function resizeCanvas() {
+      const rect = canvas.getBoundingClientRect();
+      const ratio = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.max(1, Math.round(rect.width * ratio));
+      canvas.height = Math.max(1, Math.round(rect.height * ratio));
+    }
+
+    window.addEventListener("resize", resizeCanvas);
+    resizeCanvas();
+
+    // Start 3D Loop & MQTT Connection
+    requestAnimationFrame(drawScene);
+    connectMqtt();
+
+    // Hook MQTT Message Arrived
+    setInterval(() => {
+      if (mqttClient && mqttClient.isConnected()) {
+        mqttClient.onMessageArrived = (msg) => {
+          if (!isPaused && msg.destinationName === "planko/imu") {
+            handleImuMessage(msg.payloadString);
+          }
+        };
+      }
+    }, 500);
+  </script>
 </body>
-
 </html>
