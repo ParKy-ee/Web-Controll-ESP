@@ -37,6 +37,27 @@
 #define NODE_ID 1
 #endif
 
+#if (NODE_ID == 1)
+#include <MAX30105.h>
+#include <heartRate.h>
+MAX30105 max30102;
+bool max30102Detected = false;
+uint32_t currentRed = 0, currentIr = 0;
+float currentBpm = 0.0f, beatAvg = 0.0f;
+uint8_t currentSpo2 = 0;
+bool currentFinger = false;
+const byte RATE_SIZE = 4;
+byte rates[RATE_SIZE] = {}, rateSpot = 0;
+unsigned long lastBeat = 0, lastBioNotifyTime = 0;
+const unsigned long BIO_NOTIFY_INTERVAL_MS = 250;
+bool initMax30102() {
+  if (!max30102.begin(Wire, I2C_SPEED_STANDARD)) return false;
+  max30102.setup(0x1F, 4, 2, 100, 411, 4096);
+  max30102.setPulseAmplitudeGreen(0);
+  return true;
+}
+#endif
+
 #ifndef I2C_SDA_PIN
 #define I2C_SDA_PIN 8
 #endif
@@ -387,6 +408,7 @@ void loop() {
 #include <WiFi.h>
 #include <esp_random.h>
 #include <esp_wifi.h>
+#include <atomic>
 #include <freertos/FreeRTOS.h>
 #include <freertos/portmacro.h>
 
@@ -394,8 +416,9 @@ void loop() {
 const char *WIFI_SSID = "MMm";
 const char *WIFI_PASS = "123456789";
 
-// MQTT Configuration (broker.emqx.io)
-const char *MQTT_BROKER = "broker.emqx.io";
+// Node -> BLE -> Gateway -> local Docker Mosquitto -> subscribers.
+// Update this destination if the PC's DHCP-assigned Wi-Fi address changes.
+const char *MQTT_BROKER = "10.178.191.76";
 const uint16_t MQTT_PORT = 1883;
 const char *TOPIC_IMU = "planko/imu";
 const char *TOPIC_PAD = "planko/pad";
@@ -403,6 +426,9 @@ const char *TOPIC_STATUS = "planko/status";
 const char *TOPIC_PRESSURE = "planko/pressure";
 const char *TOPIC_BIO = "planko/bio";
 char mqttClientId[32] = "PlanKO_Gateway_ESP32";
+char mqttCommandTopic[80] = {};
+char pendingMqttPadCommand[8] = {};
+bool pendingMqttPadEvent = false;
 
 // ==============================================================================
 // RFP-602 Thin-Film Pressure Sensor Configuration
@@ -427,12 +453,8 @@ const unsigned long RFP602_MQTT_INTERVAL_MS =
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
 
-// Static IP Configuration
-IPAddress STATIC_IP(192, 168, 1, 4);
-IPAddress GATEWAY_IP(192, 168, 1, 1);
-IPAddress SUBNET_MASK(255, 255, 255, 0);
-IPAddress DNS_PRIMARY(10, 178, 191, 101); // Real DNS Server on MMm
-IPAddress DNS_SECONDARY(8, 8, 8, 8);      // Google DNS
+// DHCP supplies the local address, route and DNS for the current Wi-Fi network.
+// MQTT subscribers identify the Gateway by client ID, not by its local IP.
 
 WebServer webServer(80);
 Preferences nodeConfigPreferences;
@@ -463,12 +485,40 @@ struct PadSensorState {
 PadSensorState sensors[TOTAL_PADS];
 const unsigned long DEBOUNCE_DELAY_MS = 40;
 
-// BLE Central State for 4 IMU Nodes
+// BLE central supports four node slots; this Gateway session expects Nodes 1 and 2.
 const int MAX_NODES = 4;
+const uint8_t EXPECTED_NODE_IDS[] = {1, 2};
+const size_t EXPECTED_NODE_COUNT =
+    sizeof(EXPECTED_NODE_IDS) / sizeof(EXPECTED_NODE_IDS[0]);
 NodeTelemetry nodesTelemetry[MAX_NODES];
 NimBLEClient *pNodeClients[MAX_NODES] = {nullptr, nullptr, nullptr, nullptr};
-NimBLEAdvertisedDevice *pendingConnectDevices[MAX_NODES] = {nullptr, nullptr,
-                                                            nullptr, nullptr};
+struct PendingBleNode {
+  NimBLEAddress address;
+  bool pending = false;
+  bool connecting = false;
+  uint32_t retryAfter = 0;
+};
+PendingBleNode pendingBleNodes[MAX_NODES];
+portMUX_TYPE bleConnectMux = portMUX_INITIALIZER_UNLOCKED;
+std::atomic<bool> bleScanRestartRequested{false};
+
+bool isExpectedBleNode(int nodeId) {
+  for (size_t i = 0; i < EXPECTED_NODE_COUNT; ++i) {
+    if (EXPECTED_NODE_IDS[i] == nodeId)
+      return true;
+  }
+  return false;
+}
+
+int connectedExpectedBleNodeCount() {
+  int connectedCount = 0;
+  for (size_t i = 0; i < EXPECTED_NODE_COUNT; ++i) {
+    const int idx = EXPECTED_NODE_IDS[i] - 1;
+    if (nodesTelemetry[idx].connected)
+      ++connectedCount;
+  }
+  return connectedCount;
+}
 
 const size_t DATASET_HISTORY_CAPACITY = 256;
 const size_t DATASET_BATCH_LIMIT = 16;
@@ -492,6 +542,10 @@ struct NodeDatasetHistory {
 
 NodeDatasetHistory datasetHistory[MAX_NODES] = {};
 portMUX_TYPE datasetMux = portMUX_INITIALIZER_UNLOCKED;
+const size_t MQTT_SAMPLE_BATCH_LIMIT = 4;
+uint16_t mqttPublishedSequence[MAX_NODES] = {};
+uint32_t mqttPublishedBootId[MAX_NODES] = {};
+bool mqttPublishedCursorValid[MAX_NODES] = {};
 char nodeSensorUids[MAX_NODES][20] = {};
 uint32_t gatewayBootId = 0;
 
@@ -510,7 +564,7 @@ NodeConfig nodeConfigs[MAX_NODES] = {
 
 unsigned long lastMqttStreamTime = 0;
 const unsigned long MQTT_STREAM_INTERVAL_MS =
-    250; // 4Hz MQTT Stream (reliable, adheres to cloud broker limits)
+    50; // 20 Hz consolidated stream; one message includes all nodes.
 unsigned long lastMqttReconnectAttempt = 0;
 unsigned long lastBleScanTime = 0;
 const unsigned long STALE_TIMEOUT_MS =
@@ -520,6 +574,7 @@ bool isScanning = false;
 
 // Forward declaration
 void sendPadPressEvent(const char *sensorId);
+void gatewayMqttCallback(char *topic, byte *payload, unsigned int length);
 void publishImuStream();
 void readRfp602Sensor();
 void maintainMqttConnection();
@@ -561,20 +616,9 @@ public:
     nodesTelemetry[nodeId - 1].lastReceivedMillis = 0;
     nodesTelemetry[nodeId - 1].lastSequence = 0;
 
-    if (pClient != nullptr) {
-      NimBLEAddress peer = pClient->getPeerAddress();
-      while (NimBLEDevice::isIgnored(peer)) {
-        NimBLEDevice::removeIgnored(peer);
-      }
-    }
-
-    if (pendingConnectDevices[nodeId - 1] != nullptr) {
-      delete pendingConnectDevices[nodeId - 1];
-      pendingConnectDevices[nodeId - 1] = nullptr;
-    }
-
-    // Force restart scanner with high duty cycle immediately
-    resumeBleScanIfNeeded(true);
+    // The NimBLE host owns callback execution. Scanner/client lifecycle stays
+    // in loop(); callbacks never delete objects used by a connection attempt.
+    bleScanRestartRequested.store(true);
   }
 };
 
@@ -632,6 +676,8 @@ void notifyCallback(NimBLERemoteCharacteristic *pRemoteChar, uint8_t *pData,
     sample.rawGx = raw->gx;
     sample.rawGy = raw->gy;
     sample.rawGz = raw->gz;
+    sample.status = raw->marker & 1;
+    nodesTelemetry[idx].lastRawReceivedMillis = millis();
     nodesTelemetry[idx].gx = (raw->gx / 65.5f) * 0.01745329252f;
     nodesTelemetry[idx].gy = (raw->gy / 65.5f) * 0.01745329252f;
     nodesTelemetry[idx].gz = (raw->gz / 65.5f) * 0.01745329252f;
@@ -717,7 +763,7 @@ void notifyCallback(NimBLERemoteCharacteristic *pRemoteChar, uint8_t *pData,
                   "%5.1f° | Yaw: %5.1f° | Drops: %u\n",
                   pkt->nodeId, (pkt->status == 2) ? " [MOCK]" : " [REAL]",
                   pkt->sequence, telemetry.pitch, telemetry.roll, telemetry.yaw,
-                  telemetry.totalDropped);
+                  static_cast<unsigned>(telemetry.totalDropped));
   }
 }
 
@@ -726,67 +772,70 @@ class AdvertisedDeviceCallbacks : public NimBLEAdvertisedDeviceCallbacks {
   void onResult(NimBLEAdvertisedDevice *advertisedDevice) override {
     int id = 0;
     std::string name = advertisedDevice->getName();
-    if (name.rfind("PlanKO_IMU_", 0) == 0 && name.length() >= 12) {
+    if (name.rfind("PlanKO_IMU_", 0) == 0 && name.length() == 12) {
       id = name[11] - '0';
-    } else if (advertisedDevice->isAdvertisingService(
-                   NimBLEUUID(PLANKO_SERVICE_UUID))) {
-      // Recognized via 128-bit PlanKO Service UUID even if name is deferred to
-      // scan response
-      id = 1;
     }
 
-    if (id >= 1 && id <= MAX_NODES) {
+    // Only the configured Nodes participate in this Gateway session.
+    if (isExpectedBleNode(id)) {
       int idx = id - 1;
       // If node is already connected, ignore advertisement
       if (nodesTelemetry[idx].connected) {
         return;
       }
 
-      // If connection already pending, ignore
-      if (pendingConnectDevices[idx] != nullptr) {
-        return;
+      // Copy only the address. Advertised objects belong to the scanner and
+      // can disappear on clearResults(); no shared heap pointer crosses tasks.
+      const NimBLEAddress address = advertisedDevice->getAddress();
+      bool queued = false;
+      const uint32_t now = millis();
+      portENTER_CRITICAL(&bleConnectMux);
+      PendingBleNode &pending = pendingBleNodes[idx];
+      if (!pending.pending && !pending.connecting &&
+          (pending.retryAfter == 0 ||
+           static_cast<int32_t>(now - pending.retryAfter) >= 0)) {
+        pending.address = address;
+        pending.pending = true;
+        queued = true;
       }
-
-      Serial.printf("🔎 [GATEWAY-BLE] Found Node #%d ('%s') [%s] RSSI: %d\n",
-                    id, name.c_str(),
-                    advertisedDevice->getAddress().toString().c_str(),
-                    advertisedDevice->getRSSI());
-      pendingConnectDevices[idx] =
-          new NimBLEAdvertisedDevice(*advertisedDevice);
+      portEXIT_CRITICAL(&bleConnectMux);
+      if (queued) {
+        Serial.printf("🔎 [GATEWAY-BLE] Found Node #%d ('%s') [%s] RSSI: %d\n",
+                      id, name.c_str(), address.toString().c_str(),
+                      advertisedDevice->getRSSI());
+      }
     }
   }
 };
 
 void resumeBleScanIfNeeded(bool forceRestart) {
-  int connectedCount = 0;
-  for (int i = 0; i < MAX_NODES; i++) {
-    if (nodesTelemetry[i].connected)
-      connectedCount++;
-  }
+  const int connectedCount = connectedExpectedBleNodeCount();
+  const bool missingExpectedNode =
+      connectedCount < static_cast<int>(EXPECTED_NODE_COUNT);
+  static unsigned long lastScanCycle = 0;
+  static int lastExpectedConnectedCount = -1;
 
   NimBLEScan *pScan = NimBLEDevice::getScan();
   if (!pScan)
     return;
 
-  if (connectedCount < MAX_NODES) {
+  if (missingExpectedNode) {
     uint16_t desiredWindow = (connectedCount == 0) ? 120 : 32;
-    static unsigned long lastScanCycle = 0;
-    static int lastConnectedCount = -1;
     unsigned long now = millis();
 
     // Restart scan if:
     // 1. Scanner is not currently running
     // 2. forceRestart requested (e.g. immediately on disconnect)
-    // 3. connectedCount changed (need to adjust duty cycle between 75% and 20%)
+    // 3. Expected connected count changed (adjust 75%/20% scan duty cycle)
     // 4. Scanner has been running for >= 3000ms (re-arms ESP32-C3 controller
     // GAP state to prevent stalls)
     bool shouldRestart = forceRestart || !pScan->isScanning() ||
-                         (connectedCount != lastConnectedCount) ||
+                         (connectedCount != lastExpectedConnectedCount) ||
                          (now - lastScanCycle >= 3000);
 
     if (shouldRestart) {
       lastScanCycle = now;
-      lastConnectedCount = connectedCount;
+      lastExpectedConnectedCount = connectedCount;
 
       if (pScan->isScanning()) {
         pScan->stop();
@@ -799,84 +848,41 @@ void resumeBleScanIfNeeded(bool forceRestart) {
       pScan->start(0, nullptr, false);
     }
   } else {
-    // All 4 nodes connected: stop scanning to give 100% radio bandwidth to data
-    // & Wi-Fi
+    // All expected Nodes are connected. Stop scanning so the Gateway radio can
+    // focus on the active BLE links and Wi-Fi; restart if an expected Node drops.
     if (pScan->isScanning()) {
       pScan->stop();
       pScan->clearResults();
     }
+    lastExpectedConnectedCount = connectedCount;
   }
 }
 
-void connectToNode(int idx) {
-  int id = idx + 1;
-  NimBLEAdvertisedDevice *advDevice = pendingConnectDevices[idx];
-  if (advDevice == nullptr)
-    return;
-
-  Serial.printf("⏳ [GATEWAY-BLE] Connecting to Node #%d [%s]...\n", id,
-                advDevice->getAddress().toString().c_str());
-
-  // Stop scanning before connecting to avoid radio contention
-  NimBLEScan *pScan = NimBLEDevice::getScan();
-  if (pScan && pScan->isScanning()) {
-    pScan->stop();
-  }
-
-  NimBLEAddress peerAddr = advDevice->getAddress();
-
-  NimBLEClient *pClient = nullptr;
-  if (NimBLEDevice::getClientListSize() > 0) {
-    pClient = NimBLEDevice::getClientByPeerAddress(peerAddr);
-  }
-
-  if (pClient != nullptr) {
-    if (pClient->isConnected()) {
-      pClient->disconnect();
-      delay(50);
-    }
-  } else {
-    pClient = NimBLEDevice::getDisconnectedClient();
+bool connectBlePeer(int idx, const NimBLEAddress &peerAddr) {
+  const int id = idx + 1;
+  // Each Node owns one client for its lifetime. Reusing another Node's client
+  // leaves stale aliases in pNodeClients and routes callbacks to the wrong ID.
+  NimBLEClient *pClient = pNodeClients[idx];
+  if (pClient == nullptr) {
+    pClient = NimBLEDevice::createClient();
     if (pClient == nullptr) {
-      pClient = NimBLEDevice::createClient();
-      if (pClient == nullptr) {
-        Serial.printf("❌ [GATEWAY-BLE] Could not create client for Node #%d\n",
-                      id);
-        while (NimBLEDevice::isIgnored(peerAddr)) {
-          NimBLEDevice::removeIgnored(peerAddr);
-        }
-        delete advDevice;
-        pendingConnectDevices[idx] = nullptr;
-        resumeBleScanIfNeeded(true);
-        return;
-      }
+      Serial.printf("❌ [GATEWAY-BLE] Could not create client for Node #%d\n", id);
+      return false;
     }
+    pClient->setClientCallbacks(new GatewayClientCallbacks(id), true);
+    pNodeClients[idx] = pClient;
   }
-
-  pNodeClients[idx] = pClient;
-  pClient->setClientCallbacks(new GatewayClientCallbacks(id), true);
+  if (pClient->isConnected())
+    return nodesTelemetry[idx].connected;
   // Connection parameters: 20-40ms interval, latency 2, supervision timeout 200
   // (2.0s)
   pClient->setConnectionParams(16, 32, 2, 200);
   pClient->setConnectTimeout(5);
 
-  bool connected = false;
-  if (pClient->isConnected()) {
-    connected = true;
-  } else {
-    connected = pClient->connect(advDevice, false);
-  }
-
-  if (!connected) {
+  if (!pClient->connect(peerAddr, true)) {
     Serial.printf(
         "❌ [GATEWAY-BLE] Failed to connect to Node #%d (will retry)\n", id);
-    while (NimBLEDevice::isIgnored(peerAddr)) {
-      NimBLEDevice::removeIgnored(peerAddr);
-    }
-    delete advDevice;
-    pendingConnectDevices[idx] = nullptr;
-    resumeBleScanIfNeeded(true);
-    return;
+    return false;
   }
 
   NimBLERemoteService *pRemoteService =
@@ -884,13 +890,7 @@ void connectToNode(int idx) {
   if (pRemoteService == nullptr) {
     Serial.printf("❌ [GATEWAY-BLE] Failed to find service on Node #%d\n", id);
     pClient->disconnect();
-    while (NimBLEDevice::isIgnored(peerAddr)) {
-      NimBLEDevice::removeIgnored(peerAddr);
-    }
-    delete advDevice;
-    pendingConnectDevices[idx] = nullptr;
-    resumeBleScanIfNeeded(true);
-    return;
+    return false;
   }
 
   NimBLERemoteCharacteristic *pRemoteChar =
@@ -900,13 +900,7 @@ void connectToNode(int idx) {
         "❌ [GATEWAY-BLE] Failed to find notify characteristic on Node #%d\n",
         id);
     pClient->disconnect();
-    while (NimBLEDevice::isIgnored(peerAddr)) {
-      NimBLEDevice::removeIgnored(peerAddr);
-    }
-    delete advDevice;
-    pendingConnectDevices[idx] = nullptr;
-    resumeBleScanIfNeeded(true);
-    return;
+    return false;
   }
 
   // Check CCCD descriptor
@@ -922,17 +916,11 @@ void connectToNode(int idx) {
   Serial.printf("🔍 [GATEWAY-BLE] Node #%d subscribe returned: %s\n", id,
                 subOk ? "TRUE" : "FALSE");
 
-  if (!subOk && nodesTelemetry[idx].lastReceivedMillis == 0) {
+  if (!subOk || !pClient->isConnected()) {
     Serial.printf(
         "❌ [GATEWAY-BLE] Failed to subscribe to Node #%d notifications\n", id);
     pClient->disconnect();
-    while (NimBLEDevice::isIgnored(peerAddr)) {
-      NimBLEDevice::removeIgnored(peerAddr);
-    }
-    delete advDevice;
-    pendingConnectDevices[idx] = nullptr;
-    resumeBleScanIfNeeded(true);
-    return;
+    return false;
   }
 
   Serial.printf(
@@ -940,10 +928,37 @@ void connectToNode(int idx) {
   nodesTelemetry[idx].connected = true;
   nodesTelemetry[idx].lastReceivedMillis = millis();
   nodesTelemetry[idx].lastSequence = 0;
-  delete advDevice;
-  pendingConnectDevices[idx] = nullptr;
+  return true;
+}
 
-  resumeBleScanIfNeeded();
+void connectToNode(int idx) {
+  NimBLEAddress peerAddr;
+  portENTER_CRITICAL(&bleConnectMux);
+  PendingBleNode &pending = pendingBleNodes[idx];
+  if (!pending.pending || pending.connecting) {
+    portEXIT_CRITICAL(&bleConnectMux);
+    return;
+  }
+  peerAddr = pending.address;
+  pending.pending = false;
+  pending.connecting = true;
+  portEXIT_CRITICAL(&bleConnectMux);
+
+  Serial.printf("⏳ [GATEWAY-BLE] Connecting to Node #%d [%s]...\n", idx + 1,
+                peerAddr.toString().c_str());
+  NimBLEScan *pScan = NimBLEDevice::getScan();
+  if (pScan && pScan->isScanning())
+    pScan->stop();
+
+  const bool connected = connectBlePeer(idx, peerAddr);
+  const uint32_t retryAfter = connected ? 0 : millis() + 3000;
+  portENTER_CRITICAL(&bleConnectMux);
+  pending.connecting = false;
+  pending.retryAfter = retryAfter;
+  portEXIT_CRITICAL(&bleConnectMux);
+  // Keep weaker/unavailable Nodes from monopolizing retries; the next loop can
+  // connect a different pending Node during this Node's cooldown.
+  resumeBleScanIfNeeded(true);
 }
 
 void maintainMqttConnection() {
@@ -954,24 +969,80 @@ void maintainMqttConnection() {
     unsigned long now = millis();
     if (now - lastMqttReconnectAttempt > 5000) {
       lastMqttReconnectAttempt = now;
-      Serial.print("📡 [MQTT] Connecting to broker.emqx.io:1883... ");
+      Serial.printf("[MQTT] Connecting to %s:%u... ", MQTT_BROKER, MQTT_PORT);
+      IPAddress brokerAddress;
+      if (WiFi.hostByName(MQTT_BROKER, brokerAddress) != 1) {
+        Serial.println("DNS lookup failed; checking DHCP network settings");
+        Serial.printf("[WIFI] IP=%s Gateway=%s DNS1=%s DNS2=%s\n",
+                      WiFi.localIP().toString().c_str(),
+                      WiFi.gatewayIP().toString().c_str(),
+                      WiFi.dnsIP(0).toString().c_str(),
+                      WiFi.dnsIP(1).toString().c_str());
+        lastMqttReconnectAttempt = millis();
+        return;
+      }
+      mqttClient.setServer(brokerAddress, MQTT_PORT);
       // Connect with Last Will and Testament on planko/status (non-retained)
       if (mqttClient.connect(mqttClientId, TOPIC_STATUS, 0, false, "offline")) {
         Serial.println("CONNECTED! 🎉");
         mqttClient.publish(TOPIC_STATUS, "online", false);
-        Serial.printf("📡 [MQTT] Ready! Publishing to '%s', '%s' and '%s'\n",
-                      TOPIC_IMU, TOPIC_PAD, TOPIC_PRESSURE);
+        if (mqttClient.subscribe(mqttCommandTopic, 0)) {
+          Serial.printf("📡 [MQTT] Ready! Publishing '%s', '%s', '%s'; listening on '%s'\n",
+                        TOPIC_IMU, TOPIC_PAD, TOPIC_PRESSURE,
+                        mqttCommandTopic);
+        } else {
+          Serial.printf("⚠️ [MQTT] Subscribe failed for '%s'\n",
+                        mqttCommandTopic);
+        }
       } else {
         Serial.printf("failed, rc=%d (will retry in 5s)\n", mqttClient.state());
       }
+      lastMqttReconnectAttempt = millis();
+    }
+  }
+}
+
+bool isKnownPad(const char *sensorId) {
+  if (sensorId == nullptr || sensorId[0] == '\0')
+    return false;
+  for (size_t i = 0; i < TOTAL_PADS; ++i) {
+    if (strcmp(PAD_CONFIGS[i].name, sensorId) == 0)
+      return true;
+  }
+  return false;
+}
+
+void gatewayMqttCallback(char *topic, byte *payload, unsigned int length) {
+  if (topic == nullptr || strcmp(topic, mqttCommandTopic) != 0 ||
+      payload == nullptr || length == 0)
+    return;
+  JsonDocument command;
+  if (deserializeJson(command, payload, length)) {
+    Serial.println("[MQTT] Ignored malformed Gateway command");
+    return;
+  }
+
+  const char *targetGateway = command["gatewayId"] | "";
+  if (strcmp(targetGateway, mqttClientId) != 0)
+    return;
+
+  const char *cmd = command["cmd"] | "";
+  if (strcmp(cmd, "pad") == 0) {
+    const char *pad = command["pad"] | "";
+    if (isKnownPad(pad)) {
+      snprintf(pendingMqttPadCommand, sizeof(pendingMqttPadCommand), "%s", pad);
+      pendingMqttPadEvent = true;
+    } else {
+      Serial.printf("[MQTT] Ignored unknown pad command: '%s'\n", pad);
     }
   }
 }
 
 void sendPadPressEvent(const char *sensorId) {
-  char jsonBuffer[64];
-  snprintf(jsonBuffer, sizeof(jsonBuffer), "{\"sensorId\":\"%s\",\"value\":1}",
-           sensorId);
+  char jsonBuffer[128];
+  snprintf(jsonBuffer, sizeof(jsonBuffer),
+           "{\"sensorId\":\"%s\",\"value\":1,\"gatewayId\":\"%s\"}",
+           sensorId, mqttClientId);
   if (mqttClient.connected()) {
     mqttClient.publish(TOPIC_PAD, jsonBuffer);
   }
@@ -990,22 +1061,21 @@ void publishImuStream() {
   }
 
   unsigned long now = millis();
-  // If no nodes are connected, throttle stream to 1Hz (every 1000ms) to prevent
-  // broker flooding
-  static unsigned long lastIdleBroadcastTime = 0;
-  if (connectedCount == 0) {
-    if (now - lastIdleBroadcastTime < 1000) {
-      return;
-    }
-    lastIdleBroadcastTime = now;
-  }
-
   JsonDocument doc;
   doc["type"] = "imu_stream";
+  doc["schema"] = "planko-imu-v2";
+  doc["units"]["accel"] = "m/s^2";
+  doc["units"]["gyro"] = "rad/s";
+  doc["units"]["orientation"] = "degrees";
 
   JsonObject gw = doc["gateway"].to<JsonObject>();
   gw["uptimeMs"] = millis();
   gw["connectedNodes"] = connectedCount;
+  static uint32_t mqttSequence = 0;
+  gw["mqttSeq"] = mqttSequence++;
+  gw["clientId"] = mqttClientId;
+  gw["bootId"] = gatewayBootId;
+  gw["commandTopic"] = mqttCommandTopic;
 
   JsonObject pressObj = doc["pressure"].to<JsonObject>();
   pressObj["raw"] = rfp602RawValue;
@@ -1013,36 +1083,193 @@ void publishImuStream() {
   pressObj["pressed"] = rfp602Pressed;
 
   JsonArray nodes = doc["nodes"].to<JsonArray>();
-  for (int i = 0; i < MAX_NODES; i++) {
-    if (nodesTelemetry[i].connected &&
-        (nodesTelemetry[i].lastReceivedMillis == 0 ||
-         (now - nodesTelemetry[i].lastReceivedMillis) < STALE_TIMEOUT_MS)) {
-      JsonObject n = nodes.add<JsonObject>();
-      n["nodeId"] = i + 1;
-      n["seq"] = nodesTelemetry[i].lastSequence;
-      n["ts"] = nodesTelemetry[i].lastTimestamp;
-      n["pitch"] = round(nodesTelemetry[i].pitch * 10.0f) / 10.0f;
-      n["roll"] = round(nodesTelemetry[i].roll * 10.0f) / 10.0f;
-      n["yaw"] = round(nodesTelemetry[i].yaw * 10.0f) / 10.0f;
-      n["dropped"] = nodesTelemetry[i].totalDropped;
-      n["isMock"] = (nodesTelemetry[i].status == 2);
+  bool cursorAdvance[MAX_NODES] = {};
+  uint16_t cursorSequence[MAX_NODES] = {};
+  uint32_t cursorBootId[MAX_NODES] = {};
 
-      JsonArray acc = n["accel"].to<JsonArray>();
-      acc.add(round(nodesTelemetry[i].ax * 100.0f) / 100.0f);
-      acc.add(round(nodesTelemetry[i].ay * 100.0f) / 100.0f);
-      acc.add(round(nodesTelemetry[i].az * 100.0f) / 100.0f);
+  for (int i = 0; i < MAX_NODES; i++) {
+    const bool nodeConnected =
+        nodesTelemetry[i].connected &&
+        (nodesTelemetry[i].lastReceivedMillis == 0 ||
+         (now - nodesTelemetry[i].lastReceivedMillis) < STALE_TIMEOUT_MS);
+    DatasetSample latestSample = {};
+    DatasetSample newSamples[MQTT_SAMPLE_BATCH_LIMIT] = {};
+    size_t newSampleCount = 0;
+    uint32_t nodeBootId = 0;
+    bool hasSample = false;
+
+    portENTER_CRITICAL(&datasetMux);
+    const NodeDatasetHistory &history = datasetHistory[i];
+    if (history.count > 0) {
+      const size_t oldest =
+          (history.nextIndex + DATASET_HISTORY_CAPACITY - history.count) %
+          DATASET_HISTORY_CAPACITY;
+      latestSample = history.samples[
+          (history.nextIndex + DATASET_HISTORY_CAPACITY - 1) %
+          DATASET_HISTORY_CAPACITY];
+      nodeBootId = history.bootId;
+      hasSample = true;
+
+      const bool sameCursorEpoch =
+          mqttPublishedCursorValid[i] &&
+          mqttPublishedBootId[i] == nodeBootId;
+      uint16_t cursor = sameCursorEpoch ? mqttPublishedSequence[i]
+                                        : static_cast<uint16_t>(
+                                              history.samples[oldest].sequence - 1);
+
+      for (size_t j = 0;
+           j < history.count && newSampleCount < MQTT_SAMPLE_BATCH_LIMIT; ++j) {
+        const DatasetSample &candidate =
+            history.samples[(oldest + j) % DATASET_HISTORY_CAPACITY];
+        const uint16_t delta =
+            static_cast<uint16_t>(candidate.sequence - cursor);
+        if (delta == 0 || delta >= 0x8000)
+          continue;
+        newSamples[newSampleCount++] = candidate;
+        cursor = candidate.sequence;
+      }
+      if (newSampleCount > 0) {
+        cursorAdvance[i] = true;
+        cursorSequence[i] = cursor;
+        cursorBootId[i] = nodeBootId;
+      }
+    }
+    portEXIT_CRITICAL(&datasetMux);
+
+    // Flush buffered samples even after a BLE disconnect. Keep connected nodes
+    // in the stream for live status; disconnected nodes appear only while a
+    // batch is waiting to be published.
+    if (!nodeConnected && newSampleCount == 0)
+      continue;
+
+    JsonObject n = nodes.add<JsonObject>();
+    n["nodeId"] = i + 1;
+    n["sensor_uid"] = nodeSensorUids[i];
+    n["mount_site"] = nodeConfigs[i].mountSite;
+    n["body_part"] = nodeConfigs[i].bodyPart;
+    n["side"] = nodeConfigs[i].side;
+    n["boot_id"] = nodeBootId;
+    n["connected"] = nodeConnected;
+    n["seq"] = hasSample ? latestSample.sequence : nodesTelemetry[i].lastSequence;
+    n["ts"] = hasSample ? latestSample.timestamp : nodesTelemetry[i].lastTimestamp;
+    n["valid"] = hasSample && now - nodesTelemetry[i].lastRawReceivedMillis < 1000;
+    n["calibrated"] = hasSample && latestSample.status == 1;
+    // IMU bias calibration is not a relative-orientation calibration profile.
+    n["relative_orientation_valid"] = false;
+    n["pitch"] = round(nodesTelemetry[i].pitch * 10.0f) / 10.0f;
+    n["roll"] = round(nodesTelemetry[i].roll * 10.0f) / 10.0f;
+    n["yaw"] = round(nodesTelemetry[i].yaw * 10.0f) / 10.0f;
+    n["dropped"] = nodesTelemetry[i].totalDropped;
+    n["isMock"] = (nodesTelemetry[i].status == 2);
+
+    JsonArray acc = n["accel"].to<JsonArray>();
+    acc.add(hasSample ? (latestSample.telemetryValid
+                             ? latestSample.ax / 100.0f
+                             : latestSample.rawAx / 8192.0f * 9.80665f)
+                      : nodesTelemetry[i].ax);
+    acc.add(hasSample ? (latestSample.telemetryValid
+                             ? latestSample.ay / 100.0f
+                             : latestSample.rawAy / 8192.0f * 9.80665f)
+                      : nodesTelemetry[i].ay);
+    acc.add(hasSample ? (latestSample.telemetryValid
+                             ? latestSample.az / 100.0f
+                             : latestSample.rawAz / 8192.0f * 9.80665f)
+                      : nodesTelemetry[i].az);
+    if (hasSample) {
+      JsonArray gyro = n["gyro"].to<JsonArray>();
+      gyro.add(latestSample.rawGx / 65.5f * 0.01745329252f);
+      gyro.add(latestSample.rawGy / 65.5f * 0.01745329252f);
+      gyro.add(latestSample.rawGz / 65.5f * 0.01745329252f);
+    }
+
+    JsonArray batch = n["samples"].to<JsonArray>();
+    for (size_t j = 0; j < newSampleCount; ++j) {
+      const DatasetSample &sample = newSamples[j];
+      JsonObject row = batch.add<JsonObject>();
+      row["boot_id"] = nodeBootId;
+      row["seq"] = sample.sequence;
+      row["ts"] = sample.timestamp;
+      row["valid"] = true;
+      row["calibrated"] = sample.status == 1;
+      row["isMock"] = false;
+      row["relative_orientation_valid"] = false;
+      row["pitch"] = sample.telemetryValid ? sample.pitch / 100.0f : 0.0f;
+      row["roll"] = sample.telemetryValid ? sample.roll / 100.0f : 0.0f;
+      row["yaw"] = sample.telemetryValid ? sample.yaw / 100.0f : 0.0f;
+
+      JsonArray sampleAccel = row["accel"].to<JsonArray>();
+      sampleAccel.add(sample.telemetryValid
+                          ? sample.ax / 100.0f
+                          : sample.rawAx / 8192.0f * 9.80665f);
+      sampleAccel.add(sample.telemetryValid
+                          ? sample.ay / 100.0f
+                          : sample.rawAy / 8192.0f * 9.80665f);
+      sampleAccel.add(sample.telemetryValid
+                          ? sample.az / 100.0f
+                          : sample.rawAz / 8192.0f * 9.80665f);
+
+      JsonArray sampleGyro = row["gyro"].to<JsonArray>();
+      sampleGyro.add(sample.rawGx / 65.5f * 0.01745329252f);
+      sampleGyro.add(sample.rawGy / 65.5f * 0.01745329252f);
+      sampleGyro.add(sample.rawGz / 65.5f * 0.01745329252f);
     }
   }
 
   String output;
   serializeJson(doc, output);
   bool pubOk = mqttClient.publish(TOPIC_IMU, output.c_str());
+  if (pubOk) {
+    for (int i = 0; i < MAX_NODES; ++i) {
+      if (!cursorAdvance[i])
+        continue;
+      mqttPublishedSequence[i] = cursorSequence[i];
+      mqttPublishedBootId[i] = cursorBootId[i];
+      mqttPublishedCursorValid[i] = true;
+    }
+  }
   static unsigned long lastPubFailLog = 0;
   if (!pubOk && (millis() - lastPubFailLog > 3000)) {
     lastPubFailLog = millis();
     Serial.printf("⚠️ [MQTT] Publish to '%s' failed! rc=%d\n", TOPIC_IMU,
                   mqttClient.state());
   }
+}
+
+void readRfp602Sensor() {
+  const unsigned long now = millis();
+  if (now - lastRfp602SampleTime >= RFP602_SAMPLE_INTERVAL_MS) {
+    lastRfp602SampleTime = now;
+    rfp602RawValue = analogRead(RFP602_PIN);
+    rfp602Voltage = analogReadMilliVolts(RFP602_PIN) / 1000.0f;
+    rfp602Pressed = rfp602RawValue >= RFP602_PRESS_THRESHOLD;
+  }
+  if (mqttClient.connected() && now - lastRfp602MqttTime >= RFP602_MQTT_INTERVAL_MS) {
+    lastRfp602MqttTime = now;
+    JsonDocument doc;
+    doc["raw"] = rfp602RawValue;
+    doc["voltage"] = rfp602Voltage;
+    doc["pressed"] = rfp602Pressed;
+    String output;
+    serializeJson(doc, output);
+    mqttClient.publish(TOPIC_PRESSURE, output.c_str());
+  }
+}
+
+void publishBioTelemetry() {
+  static unsigned long lastPublish = 0;
+  const unsigned long now = millis();
+  if (!mqttClient.connected() || !nodesTelemetry[0].connected || now - lastPublish < 250) return;
+  lastPublish = now;
+  JsonDocument doc;
+  doc["nodeId"] = 1;
+  doc["bpm"] = nodesTelemetry[0].bpm;
+  doc["spo2"] = nodesTelemetry[0].spo2;
+  doc["finger"] = nodesTelemetry[0].finger;
+  doc["red"] = nodesTelemetry[0].rawRed;
+  doc["ir"] = nodesTelemetry[0].rawIr;
+  String output;
+  serializeJson(doc, output);
+  mqttClient.publish(TOPIC_BIO, output.c_str());
 }
 
 void handlePadInputs() {
@@ -1098,7 +1325,8 @@ void handleSerialSimulator() {
       Serial.printf(
           "  Node #%d: %s | Seq: %u | Dropped: %u | P:%.1f R:%.1f Y:%.1f\n",
           i + 1, nodesTelemetry[i].connected ? "CONNECTED" : "OFFLINE",
-          nodesTelemetry[i].lastSequence, nodesTelemetry[i].totalDropped,
+          nodesTelemetry[i].lastSequence,
+          static_cast<unsigned>(nodesTelemetry[i].totalDropped),
           nodesTelemetry[i].pitch, nodesTelemetry[i].roll,
           nodesTelemetry[i].yaw);
     }
@@ -1132,30 +1360,42 @@ void loadNodeConfigs() {
   static const char *const bodyParts[] = {"neck", "back", "wrist", "chest",
                                           "other"};
   static const char *const sides[] = {"unknown", "left", "right"};
-  nodeConfigPreferences.begin("node_cfg", true);
+  // Create the namespace on first boot; read-only open reports NOT_FOUND on
+  // fresh boards. Keep the compiled defaults if NVS itself is unavailable.
+  if (!nodeConfigPreferences.begin("node_cfg", false)) {
+    Serial.println("[NODES] NVS unavailable; using default mounting settings");
+    return;
+  }
   for (int i = 0; i < MAX_NODES; ++i) {
     char key[16];
     snprintf(key, sizeof(key), "name%d", i + 1);
-    String name = nodeConfigPreferences.getString(key, nodeConfigs[i].name);
+    String name = nodeConfigPreferences.isKey(key)
+                      ? nodeConfigPreferences.getString(key, nodeConfigs[i].name)
+                      : String(nodeConfigs[i].name);
     if (name.length() > 0)
       name.toCharArray(nodeConfigs[i].name, sizeof(nodeConfigs[i].name));
 
     snprintf(key, sizeof(key), "site%d", i + 1);
-    String site =
-        nodeConfigPreferences.getString(key, nodeConfigs[i].mountSite);
+    String site = nodeConfigPreferences.isKey(key)
+                      ? nodeConfigPreferences.getString(key, nodeConfigs[i].mountSite)
+                      : String(nodeConfigs[i].mountSite);
     if (isAllowedConfigValue(site, sites, sizeof(sites) / sizeof(sites[0])))
       site.toCharArray(nodeConfigs[i].mountSite,
                        sizeof(nodeConfigs[i].mountSite));
 
     snprintf(key, sizeof(key), "body%d", i + 1);
-    String body = nodeConfigPreferences.getString(key, nodeConfigs[i].bodyPart);
+    String body = nodeConfigPreferences.isKey(key)
+                      ? nodeConfigPreferences.getString(key, nodeConfigs[i].bodyPart)
+                      : String(nodeConfigs[i].bodyPart);
     if (isAllowedConfigValue(body, bodyParts,
                              sizeof(bodyParts) / sizeof(bodyParts[0])))
       body.toCharArray(nodeConfigs[i].bodyPart,
                        sizeof(nodeConfigs[i].bodyPart));
 
     snprintf(key, sizeof(key), "side%d", i + 1);
-    String side = nodeConfigPreferences.getString(key, nodeConfigs[i].side);
+    String side = nodeConfigPreferences.isKey(key)
+                      ? nodeConfigPreferences.getString(key, nodeConfigs[i].side)
+                      : String(nodeConfigs[i].side);
     if (isAllowedConfigValue(side, sides, sizeof(sides) / sizeof(sides[0])))
       side.toCharArray(nodeConfigs[i].side, sizeof(nodeConfigs[i].side));
   }
@@ -1286,6 +1526,8 @@ void handleSamplesApi() {
 
   JsonDocument doc;
   doc["gateway_boot_id"] = gatewayBootId;
+  doc["units"]["accel"] = "m/s^2";
+  doc["units"]["gyro"] = "rad/s";
   JsonArray nodes = doc["nodes"].to<JsonArray>();
   const uint32_t now = millis();
   for (int i = 0; i < MAX_NODES; ++i) {
@@ -1336,6 +1578,14 @@ void handleSamplesApi() {
         continue;
       JsonObject sample = samples.add<JsonObject>();
       sample["sample_ms"] = source.timestamp;
+      sample["sensor_uid"] = nodeSensorUids[i];
+      sample["mount_site"] = nodeConfigs[i].mountSite;
+      sample["body_part"] = nodeConfigs[i].bodyPart;
+      sample["side"] = nodeConfigs[i].side;
+      sample["boot_id"] = snapshotBootId[i];
+      sample["accel_unit"] = "m/s^2";
+      sample["gyro_unit"] = "rad/s";
+      sample["relative_orientation_valid"] = false;
       sample["seq"] = source.sequence;
       sample["raw_ax"] = source.rawAx;
       sample["raw_ay"] = source.rawAy;
@@ -1457,11 +1707,9 @@ void setup() {
     case ARDUINO_EVENT_WIFI_STA_DISCONNECTED: {
       Serial.printf("\n⚠️ [WIFI] Disconnected (Reason: %d)\n",
                     info.wifi_sta_disconnected.reason);
-      NimBLEScan *s = NimBLEDevice::getScan();
-      if (s && s->isScanning()) {
-        s->stop(); // Pause BLE scan so Wi-Fi can reconnect without radio
-                   // interference
-      }
+      // Wi-Fi callbacks can run before NimBLE initialization. Defer BLE work
+      // to loop() instead of accessing the scanner from this event task.
+      bleScanRestartRequested.store(true);
       break;
     }
     default:
@@ -1478,7 +1726,8 @@ void setup() {
   int targetChannel = 0;
   for (int i = 0; i < n; ++i) {
     Serial.printf("   - '%s' (RSSI: %d dBm, Ch: %d, Auth: %d)\n",
-                  WiFi.SSID(i).c_str(), WiFi.RSSI(i), WiFi.channel(i),
+                  WiFi.SSID(i).c_str(), static_cast<int>(WiFi.RSSI(i)),
+                  static_cast<int>(WiFi.channel(i)),
                   WiFi.encryptionType(i));
     if (WiFi.SSID(i) == WIFI_SSID) {
       targetChannel = WiFi.channel(i);
@@ -1488,21 +1737,16 @@ void setup() {
 
   // Enable PMF (Protected Management Frames) for compatibility with modern
   // Wi-Fi routers
-  wifi_config_t current_conf;
-  esp_wifi_get_config(WIFI_IF_STA, &current_conf);
-  current_conf.sta.pmf_cfg.capable = true;
-  current_conf.sta.pmf_cfg.required = false;
-  esp_wifi_set_config(WIFI_IF_STA, &current_conf);
+  wifi_config_t current_conf = {};
+  if (esp_wifi_get_config(WIFI_IF_STA, &current_conf) == ESP_OK) {
+    current_conf.sta.pmf_cfg.capable = true;
+    current_conf.sta.pmf_cfg.required = false;
+    esp_wifi_set_config(WIFI_IF_STA, &current_conf);
+  }
 
   WiFi.setTxPower(WIFI_POWER_8_5dBm); // Low TX power prevents voltage drop on
                                       // ESP32-C3 DevKit during auth
-  if (!WiFi.config(STATIC_IP, GATEWAY_IP, SUBNET_MASK, DNS_PRIMARY,
-                   DNS_SECONDARY)) {
-    Serial.println(
-        "⚠️ [WIFI] Static IP configuration failed; DHCP may be used instead.");
-  }
-  Serial.printf("🌐 [WIFI] Requested Gateway IP: %s\n",
-                STATIC_IP.toString().c_str());
+  Serial.println("🌐 [WIFI] DHCP enabled: requesting IP, gateway and DNS from Wi-Fi AP");
   Serial.printf("⏳ [WIFI] Connecting to SSID: '%s'...\n", WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   int attempts = 0;
@@ -1526,19 +1770,28 @@ void setup() {
 
   Serial.printf("🎉 Wi-Fi Connected! IP: %s\n",
                 WiFi.localIP().toString().c_str());
+  Serial.printf("[WIFI] Gateway: %s | Subnet: %s | DNS1: %s | DNS2: %s\n",
+                WiFi.gatewayIP().toString().c_str(),
+                WiFi.subnetMask().toString().c_str(),
+                WiFi.dnsIP(0).toString().c_str(),
+                WiFi.dnsIP(1).toString().c_str());
   setupDatasetServer();
 
   // Initialize MQTT Client
   snprintf(mqttClientId, sizeof(mqttClientId), "PlanKO_GW_%08X",
-           (uint32_t)ESP.getEfuseMac());
+           static_cast<unsigned>(ESP.getEfuseMac() & 0xFFFFFFFFULL));
+  snprintf(mqttCommandTopic, sizeof(mqttCommandTopic),
+           "planko/gateway/%s/cmd", mqttClientId);
   mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
-  mqttClient.setBufferSize(2048);
+  mqttClient.setCallback(gatewayMqttCallback);
+  mqttClient.setBufferSize(4096); // Four nodes with six axes and stream metadata.
   mqttClient.setKeepAlive(30);
   mqttClient.setSocketTimeout(5);
   Serial.printf("🔌 MQTT Broker: %s:%u (ClientID: %s)\n", MQTT_BROKER,
                 MQTT_PORT, mqttClientId);
   maintainMqttConnection();
-  Serial.printf("💾 [MEMORY] Free Heap: %u bytes\n", ESP.getFreeHeap());
+  Serial.printf("💾 [MEMORY] Free Heap: %u bytes\n",
+                static_cast<unsigned>(ESP.getFreeHeap()));
 
   Serial.println("👉 [INIT] Step 1: Enabling modem sleep for coexistence...");
   Serial.flush();
@@ -1565,15 +1818,21 @@ void setup() {
   Serial.flush();
   pScan->start(0, nullptr, false);
   isScanning = true;
-  Serial.println(
-      "🎉 [INIT] Setup completed! Scanner active, MQTT connected.\n");
+  Serial.printf("🎉 [INIT] Setup completed! Scanner active, MQTT %s.\n",
+                mqttClient.connected() ? "connected" : "waiting for broker");
   Serial.flush();
 }
 
 void loop() {
+  if (bleScanRestartRequested.exchange(false))
+    resumeBleScanIfNeeded(true);
   maintainMqttConnection();
   if (mqttClient.connected()) {
     mqttClient.loop();
+  }
+  if (pendingMqttPadEvent) {
+    pendingMqttPadEvent = false;
+    sendPadPressEvent(pendingMqttPadCommand);
   }
   webServer.handleClient();
   readRfp602Sensor();
@@ -1584,9 +1843,15 @@ void loop() {
 
   // Check for pending BLE connections (one at a time to keep MQTT & Wi-Fi
   // responsive)
-  for (int i = 0; i < MAX_NODES; i++) {
-    if (pendingConnectDevices[i] != nullptr) {
+  static int nextBleNode = 0;
+  for (int offset = 0; offset < MAX_NODES; offset++) {
+    const int i = (nextBleNode + offset) % MAX_NODES;
+    portENTER_CRITICAL(&bleConnectMux);
+    const bool pending = pendingBleNodes[i].pending;
+    portEXIT_CRITICAL(&bleConnectMux);
+    if (pending) {
       connectToNode(i);
+      nextBleNode = (i + 1) % MAX_NODES;
       break;
     }
   }
@@ -1613,9 +1878,10 @@ void loop() {
     }
   }
 
-  // Periodic MQTT Publish of consolidated IMU streams (10Hz)
-  if (now - lastMqttStreamTime >= MQTT_STREAM_INTERVAL_MS) {
-    lastMqttStreamTime = now;
+  // Keep 50 ms cadence without catch-up bursts after blocking work.
+  const unsigned long publishNow = millis();
+  if (publishNow - lastMqttStreamTime >= MQTT_STREAM_INTERVAL_MS) {
+    lastMqttStreamTime += ((publishNow - lastMqttStreamTime) / MQTT_STREAM_INTERVAL_MS) * MQTT_STREAM_INTERVAL_MS;
     publishImuStream();
   }
 
@@ -1633,11 +1899,12 @@ void loop() {
   static unsigned long lastGatewayHeartbeat = 0;
   if (now - lastGatewayHeartbeat >= 2000) {
     lastGatewayHeartbeat = now;
-    int connectedCount = 0;
+    const int connectedCount = connectedExpectedBleNodeCount();
     char nodesSummary[64] = "";
-    for (int i = 0; i < MAX_NODES; i++) {
+    for (size_t expectedIndex = 0; expectedIndex < EXPECTED_NODE_COUNT;
+         ++expectedIndex) {
+      const int i = EXPECTED_NODE_IDS[expectedIndex] - 1;
       if (nodesTelemetry[i].connected) {
-        connectedCount++;
         char tmp[16];
         snprintf(tmp, sizeof(tmp), "#%d ", i + 1);
         strcat(nodesSummary, tmp);
@@ -1646,14 +1913,17 @@ void loop() {
     if (connectedCount == 0)
       strcpy(nodesSummary, "None");
 
-    Serial.printf("🌐 [GATEWAY] Wi-Fi: %s (%s) | MQTT: %s | BLE: %d/4 [%s] | "
+    Serial.printf("🌐 [GATEWAY] Wi-Fi: %s (%s) | MQTT: %s | BLE: %d/%u [%s] | "
                   "RFP: %d (%s) | Heap: %uB | Uptime: %lus\n",
                   (WiFi.status() == WL_CONNECTED) ? "ONLINE" : "OFFLINE",
                   (WiFi.status() == WL_CONNECTED)
                       ? WiFi.localIP().toString().c_str()
                       : "No IP",
                   mqttClient.connected() ? "CONNECTED" : "DISCONNECTED",
-                  connectedCount, nodesSummary, ESP.getFreeHeap(), now / 1000);
+                  connectedCount, static_cast<unsigned>(EXPECTED_NODE_COUNT),
+                  nodesSummary, rfp602RawValue,
+                  rfp602Pressed ? "PRESSED" : "RELEASED",
+                  static_cast<unsigned>(ESP.getFreeHeap()), now / 1000);
   }
 }
 

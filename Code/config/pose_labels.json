@@ -11,6 +11,13 @@
     "holding",
     "returning"
   ],
+  "case_labels": [
+    {"id": "case_neutral", "label": "ท่าปกติ (neutral)"},
+    {"id": "case_flexion", "label": "ก้ม/งอ (flexion)"},
+    {"id": "case_extension", "label": "แอ่น/เหยียด (extension)"},
+    {"id": "case_lateral_left", "label": "เอียงซ้าย (lateral left)"},
+    {"id": "case_lateral_right", "label": "เอียงขวา (lateral right)"}
+  ],
   "mount_sites": {
     "wrist": {
       "label": "หลังมือ/ข้อมือ",

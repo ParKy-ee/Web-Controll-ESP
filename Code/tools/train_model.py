@@ -33,6 +33,11 @@ def label_index(config: dict):
             for action in value.get("actions", [])}
 
 
+def case_label_index(config: dict) -> set[str]:
+    """Labels shared by all sensors in one case, independent of body part."""
+    return {entry["id"] for entry in config.get("case_labels", [])}
+
+
 def legacy_map(config: dict):
     return {filename.lower(): action["id"]
             for body in config["body_parts"].values()
@@ -81,7 +86,7 @@ def read_recording(path: Path, config: dict) -> list[dict]:
             calibration_method_version = calibration_time_boot_ms = 0
         try:
             boot_ms = int(float(raw.get("boot_ms") or raw.get("sample_ms") or 0))
-            seq = int(float(raw.get("seq") or index))
+            seq = int(float(raw["seq"])) if raw.get("seq") not in (None, "") else index
             host_time = float(raw.get("host_time_s") or raw.get("host_timestamp_s") or index / config["sampling_hz"])
         except (TypeError, ValueError):
             continue
@@ -90,7 +95,8 @@ def read_recording(path: Path, config: dict) -> list[dict]:
         previous_seq, previous_boot = seq, boot_ms
         # Keep arrival order; a reboot begins a new stream epoch and cannot be
         # accidentally sorted back together by the reset boot-time clock.
-        device_time = boot_ms / 1000 if boot_ms else host_time
+        has_device_clock = any(raw.get(key) not in (None, "") for key in ("boot_ms", "sample_ms"))
+        device_time = boot_ms / 1000 if has_device_clock else host_time
         row = {
             "sensor_uid": sensor_uid,
             "mount_site": site,
@@ -99,7 +105,7 @@ def read_recording(path: Path, config: dict) -> list[dict]:
             "subject_id": raw.get("subject_id", ""),
             "session_id": raw.get("session_id") or raw.get("recording_id") or path.stem,
             "trial_id": raw.get("trial_id") or raw.get("recording_id") or path.stem,
-            "stream_epoch": f"{path.stem}:{epoch}",
+            "stream_epoch": f"{path.stem}:{raw.get('stream_epoch', '')}:{epoch}",
             "calibration_id": raw.get("calibration_id") or "",
             "calibration_method_version": calibration_method_version,
             "calibration_time_boot_ms": calibration_time_boot_ms,
@@ -116,10 +122,10 @@ def read_recording(path: Path, config: dict) -> list[dict]:
             "device_time_s": device_time,
             "host_time_s": host_time,
             "valid": str(raw.get("valid", "true")).lower() in ("true", "1", "yes"),
+            "gap_before": str(raw.get("gap_before", "false")).lower() in ("true", "1", "yes"),
         }
         for axis in "xyz":
-            # Legacy/web captures use m/s^2 and rad/s. Firmware JSON ax..az are
-            # in g; those are converted by serve_model before feature extraction.
+            # CSV channels use SI units: m/s^2 and rad/s, matching MQTT v2.
             row[f"accel_{axis}"] = raw.get(f"accel_{axis}", "")
             row[f"gyro_{axis}"] = raw.get(f"gyro_{axis}", "")
         for key in ("relative_roll_deg", "relative_pitch_deg"):
@@ -137,7 +143,7 @@ def load_windows(inputs: list[Path], config: dict, seconds: float):
     ignored_files = []
     for path in inputs:
         rows = read_recording(path, config)
-        allowed = label_index(config)
+        allowed = set(label_index(config)) | case_label_index(config)
         known = [row for row in rows if row["action_label"] in allowed]
         if not known:
             ignored_files.append(f"{path}: no action label or configured legacy filename mapping")
@@ -303,7 +309,7 @@ def main():
     if len(action_labels) < 2:
         print(f"❌ ไม่สามารถเทรนโมเดลจำแนกท่าได้: พบท่าทาง (action_label) เพียง {len(action_labels)} ท่า คือ {action_labels}", file=sys.stderr)
         print("💡 การเทรนโมเดล AI (Classification) จำเป็นต้องมีอย่างน้อย 2 ท่าขึ้นไป เพื่อให้ AI เปรียบเทียบและแยกแยะได้", file=sys.stderr)
-        print("   เช่น ต้องมีไฟล์ท่า lumbar_neutral (หลังตรง) และ lumbar_flexion (ก้มหลัง) ร่วมกัน", file=sys.stderr)
+        print("   เช่น ต้องมี case_neutral (ท่าปกติ) และ case_flexion (ก้ม/งอ) จาก Node ที่ใช้ร่วมกัน", file=sys.stderr)
         print(f"   (จำนวนหน้าต่างเวลาที่สกัดได้จากไฟล์นี้: {len(action_windows)} windows, จังหวะ phase: {stage_labels})", file=sys.stderr)
         return 2
 

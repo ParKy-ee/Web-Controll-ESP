@@ -9,6 +9,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlencode, urlsplit
 from collections import deque
 from pathlib import Path
 from threading import Lock
@@ -17,7 +18,10 @@ import joblib
 import numpy as np
 from flask import Flask, jsonify, request, send_from_directory
 
-from imu_features import StreamBuffer, feature_names
+from imu_features import FEATURE_VERSION, StreamBuffer, feature_names
+from plank_phase import (PlankInputError, advance_phase, capabilities as plank_capabilities,
+                         create_phase_state, load_config as load_plank_config,
+                         make_calibration)
 
 ROOT = Path(__file__).resolve().parents[1]
 app = Flask(__name__)
@@ -26,6 +30,23 @@ states = {}
 buffers = {}
 live_cursors = {}
 lock = Lock()
+plank_lock = Lock()
+plank_states = {}
+plank_config = load_plank_config()
+
+
+@app.after_request
+def allow_local_monitor(response):
+    # Support the existing file:// or localhost monitor without opening the API
+    # to arbitrary remote website origins. Same-origin /monitor needs no CORS.
+    origin = request.headers.get("Origin", "")
+    if request.path.startswith("/api/") and (origin == "null" or
+            urlsplit(origin).hostname in {"localhost", "127.0.0.1", "::1"}):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Vary"] = "Origin"
+    return response
 
 
 def reset_stream(key):
@@ -83,6 +104,7 @@ def predict_from_features(features: dict, site: str, body_part: str,
     x = np.asarray([[float(features.get(name, 0.0)) for name in item["feature_columns"]]], dtype=float)
     action_probs = _class_probabilities(item.get("action_model"), x)
     allowed = {entry["id"] for entry in item["config"]["body_parts"].get(body_part, {}).get("actions", [])}
+    allowed.update(entry["id"] for entry in item["config"].get("case_labels", []))
     action_probs = {label: score for label, score in action_probs.items() if label in allowed}
     if not action_probs:
         return unknown(item, body_part, site, calibrated, "no_action_classes_for_body_part")
@@ -155,6 +177,10 @@ def predict_from_features(features: dict, site: str, body_part: str,
 
 def normalize_live(payload: dict, site: str, body_part: str, side: str):
     boot_ms = int(payload.get("sample_ms", payload.get("boot_ms", 0)))
+    accel_unit = payload.get("accel_unit", "g")  # Legacy standalone firmware.
+    if accel_unit not in {"g", "m/s^2"} or payload.get("gyro_unit", "rad/s") != "rad/s":
+        raise ValueError("Unsupported sensor units")
+    accel_scale = 9.80665 if accel_unit == "g" else 1.0
     row = {
         "sensor_uid": payload.get("sensor_uid") or payload.get("sensor_id") or "esp32",
         "mount_site": payload.get("mount_site") or site,
@@ -174,9 +200,9 @@ def normalize_live(payload: dict, site: str, body_part: str, side: str):
         "relative_roll_deg": payload.get("relative_roll_deg", 0.0),
         "relative_pitch_deg": payload.get("relative_pitch_deg", payload.get("wrist_flex_deg", 0.0)),
         "valid": bool(payload.get("valid", True)),
-        "accel_x": float(payload["ax"]) * 9.80665,
-        "accel_y": float(payload["ay"]) * 9.80665,
-        "accel_z": float(payload["az"]) * 9.80665,
+        "accel_x": float(payload["ax"]) * accel_scale,
+        "accel_y": float(payload["ay"]) * accel_scale,
+        "accel_z": float(payload["az"]) * accel_scale,
         "gyro_x": float(payload["gx"]),
         "gyro_y": float(payload["gy"]),
         "gyro_z": float(payload["gz"]),
@@ -185,8 +211,19 @@ def normalize_live(payload: dict, site: str, body_part: str, side: str):
 
 
 @app.get("/")
+@app.get("/model_test.html")
 def index():
     return send_from_directory(ROOT, "model_test.html")
+
+
+@app.get("/monitor")
+def mqtt_monitor():
+    return send_from_directory(ROOT / "WEB", "index.html")
+
+
+@app.get("/imu_protocol.js")
+def monitor_protocol():
+    return send_from_directory(ROOT / "WEB", "imu_protocol.js")
 
 
 @app.get("/api/health")
@@ -195,6 +232,9 @@ def health():
         return jsonify({"ready": False, "reason": "Train a model first with tools/train_model.py"}), 503
     return jsonify({"ready": True, "model_version": bundle["model_version"],
                     "feature_version": bundle["feature_version"],
+                    "feature_columns": bundle["feature_columns"],
+                    "feature_units": bundle.get("feature_units", {}),
+                    "units": bundle.get("units", {}),
                     "score_kind": bundle["score_kind"],
                     "window_seconds": bundle["window_seconds"],
                     "sampling_hz": bundle["sampling_hz"],
@@ -213,6 +253,62 @@ def health():
                         for body in bundle["config"]["body_parts"].values()
                         for action in body.get("actions", [])
                         for filename in action.get("legacy_files", [])}})
+
+
+@app.get("/api/plank/capabilities")
+def plank_health():
+    return jsonify(plank_capabilities(plank_config))
+
+
+@app.post("/api/plank/calibrate")
+def plank_calibrate():
+    payload = request.get_json(force=True)
+    if not isinstance(payload, dict):
+        return jsonify({"ready": False, "reason": "invalid_request_body"}), 400
+    stream_key = str(payload.get("stream_key") or "")
+    if not stream_key or len(stream_key) > 240:
+        return jsonify({"ready": False, "reason": "invalid_stream_key"}), 400
+    try:
+        calibration = make_calibration(payload.get("frames"), plank_config)
+    except PlankInputError as error:
+        return jsonify({"ready": False, "reason": str(error)}), 400
+    state = create_phase_state(calibration)
+    state["stream_key"] = stream_key
+    with plank_lock:
+        plank_states[stream_key] = state
+    return jsonify({
+        "ready": True,
+        "model_version": plank_config["model_version"],
+        "trained_classifier": False,
+        "thresholds_validated": bool(plank_config["score_thresholds"].get("validated", False)),
+        "baseline_pitch_deg": round(calibration["baseline_pitch_deg"], 3),
+        "baseline_roll_deg": round(calibration["baseline_roll_deg"], 3),
+        "pitch_std_deg": calibration["pitch_std_deg"],
+        "roll_std_deg": calibration["roll_std_deg"],
+        "node_baselines": calibration["node_baselines"],
+        "sample_count": calibration["sample_count"],
+        "duration_seconds": calibration["duration_seconds"],
+    })
+
+
+@app.post("/api/plank/frame")
+def plank_frame():
+    payload = request.get_json(force=True)
+    if not isinstance(payload, dict):
+        return jsonify({"ready": False, "phase": "unknown", "reason": "invalid_request_body"}), 400
+    stream_key = str(payload.get("stream_key") or "")
+    if not stream_key or len(stream_key) > 240:
+        return jsonify({"ready": False, "phase": "unknown", "reason": "invalid_stream_key"}), 400
+    with plank_lock:
+        state = plank_states.get(stream_key)
+        if state is None:
+            return jsonify({"ready": False, "phase": "unknown", "reason": "calibration_required"}), 409
+        try:
+            result = advance_phase(state, payload.get("frame"), plank_config, time.monotonic())
+        except PlankInputError as error:
+            return jsonify({"ready": False, "phase": "unknown", "reason": str(error)}), 409
+    result.update({"ready": True, "model_version": plank_config["model_version"]})
+    return jsonify(result)
 
 
 @app.post("/api/predict-window")
@@ -239,6 +335,8 @@ def predict_window():
                > required_seconds + 1e-9):
             rows.pop(0)
         for index, row in enumerate(rows):
+            if row.get("valid") is not True:
+                return jsonify(unknown(bundle, body_part, site, False, "invalid_sensor_sample"))
             if row.get("mount_site", site) != site or row.get("body_part", body_part) != body_part:
                 return jsonify(unknown(bundle, body_part, site, False, "window_crosses_site_or_body_part"))
             if bundle.get("requires_calibration") and (
@@ -282,10 +380,10 @@ def predict_window():
              "trial_id", "stream_epoch", "calibration_id", "calibration_method_version")
         }
         if (previous and (stream_context != previous.get("stream_context")
-                          or int(payload.get("seq", -1)) != int(previous.get("last_input_seq", -2)) + 1
+                          or int(payload.get("seq", rows[-1]["seq"])) <= int(previous.get("last_input_seq", -1))
                           or device_time_s <= float(previous.get("last_input_time", 0.0))
                           or device_time_s - float(previous.get("last_input_time", 0.0)) >
-                          float(bundle["config"]["prediction"]["gap_reset_seconds"]))):
+                          required_seconds + float(bundle["config"]["prediction"]["gap_reset_seconds"]))):
             states.pop(stream_key, None)
         result = predict_from_features(features, site, body_part, calibrated, stream_key,
                                        device_time_s, str(rows[-1].get("side") or "unknown"))
@@ -325,19 +423,25 @@ def live():
         cursor = live_cursors.get(cursor_key, {})
         cursor_boot_id = int(cursor.get("boot_id", 0))
         cursor_seq = int(cursor.get("seq", 0))
-        query = f"after_seq={cursor_seq}&boot_id={cursor_boot_id}"
+        # Gateway /samples uses per-node cursors, unlike the legacy server.
+        query = urlencode({"after_seq": cursor_seq, "boot_id": cursor_boot_id, **{
+            f"n{i}_{key}": value for i in range(1, 5)
+            for key, value in (("after_seq", cursor_seq), ("boot_id", cursor_boot_id))}})
         with urllib.request.urlopen(f"http://{address}/samples?{query}", timeout=2.0) as response:
             payload = json.loads(response.read().decode("utf-8"))
         if isinstance(payload, dict) and "nodes" in payload and isinstance(payload["nodes"], list):
             target_node = None
             for nd in payload["nodes"]:
-                if nd.get("mount_site") == site or nd.get("body_part") == body_part:
+                if nd.get("mount_site") == site and nd.get("body_part") == body_part:
                     target_node = nd
                     break
-            if not target_node and payload["nodes"]:
-                target_node = payload["nodes"][0]
             if target_node:
-                payload["samples"] = target_node.get("samples", [])
+                metadata = {key: target_node[key] for key in
+                            ("sensor_uid", "mount_site", "body_part", "side", "boot_id") if key in target_node}
+                units = payload.get("units", {})
+                metadata.update({"accel_unit": units.get("accel", "m/s^2"),
+                                 "gyro_unit": units.get("gyro", "rad/s")})
+                payload["samples"] = [{**metadata, **row} for row in target_node.get("samples", [])]
                 payload["boot_id"] = target_node.get("boot_id", 0)
                 payload["latest_seq"] = target_node.get("latest_seq", 0)
                 payload["dropped"] = target_node.get("dropped", False)
@@ -471,7 +575,16 @@ def live():
 def create_app(model_path: Path):
     global bundle
     if model_path.exists():
-        bundle = joblib.load(model_path)
+        candidate = joblib.load(model_path)
+        expected = feature_names(candidate["mount_sites"], candidate.get("requires_calibration", False),
+                                 candidate["body_parts"], candidate.get("sides", []))
+        if candidate.get("feature_version") != FEATURE_VERSION or candidate["feature_columns"] != expected:
+            raise ValueError("Model feature schema does not match imu_features.py; select or retrain a compatible bundle")
+        for key in ("action_model", "phase_model"):
+            estimator = candidate.get(key)
+            if estimator is not None and getattr(estimator, "n_features_in_", len(expected)) != len(expected):
+                raise ValueError(f"{key} input dimensions do not match the feature schema")
+        bundle = candidate
     return app
 
 

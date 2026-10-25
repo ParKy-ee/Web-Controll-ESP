@@ -7,6 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js"></script>
   <style>
     :root {
       --bg-dark: #080c14;
@@ -741,8 +742,12 @@
     <!-- Connection Bar -->
     <div class="connection-panel">
       <div class="ws-input-wrap">
-        <label for="wsUrl" style="font-size:0.75rem; color:var(--text-muted);">WS URL:</label>
-        <input type="text" id="wsUrl" value="ws://192.168.1.200:81/" placeholder="ws://192.168.1.200:81/" />
+        <label for="mqttUrl" style="font-size:0.75rem; color:var(--text-muted);">MQTT Broker (WSS):</label>
+        <input type="text" id="mqttUrl" value="wss://test.mosquitto.org:8081/mqtt" placeholder="wss://test.mosquitto.org:8081/mqtt" />
+      </div>
+      <div class="ws-input-wrap">
+        <label for="gatewayFilter" style="font-size:0.75rem; color:var(--text-muted);">Gateway ID:</label>
+        <input type="text" id="gatewayFilter" placeholder="Auto-select first Gateway" />
       </div>
 
       <button id="btnConnect" class="btn btn-primary" onclick="toggleConnect()">
@@ -763,7 +768,7 @@
     <div class="telemetry-stats-bar">
       <div class="stat-card">
         <div class="stat-info">
-          <p>Gateway IP</p>
+          <p>Gateway ID</p>
           <h3 id="statIp">---.---.---.---</h3>
         </div>
         <div class="stat-icon">🌐</div>
@@ -779,7 +784,7 @@
 
       <div class="stat-card">
         <div class="stat-info">
-          <p>Gateway Latency</p>
+          <p>Stream Age</p>
           <h3 id="statLatency">-- ms</h3>
         </div>
         <div class="stat-icon">⚡</div>
@@ -864,7 +869,7 @@
             <span>📊 4-Node 6-DOF IMU Telemetry</span>
           </div>
           <button class="btn btn-secondary" style="font-size:0.75rem; padding:4px 12px;" onclick="sendCalibrateCmd()">
-            🎯 Zero / Calibrate All
+            🎯 Zero Display Angles
           </button>
         </div>
 
@@ -893,7 +898,7 @@
         <div class="log-line">
           <span class="log-time">[INIT]</span>
           <span class="log-tag tag-sys">SYS</span>
-          <span class="log-msg">PlanKO Remote Dashboard ready. Connect to Gateway WebSocket to begin streaming.</span>
+          <span class="log-msg">PlanKO Remote Dashboard ready. Connecting to Mosquitto for Gateway telemetry.</span>
         </div>
       </div>
     </div>
@@ -908,12 +913,17 @@
 
   <script>
     // Configuration & State
-    let socket = null;
+    let mqttClient = null;
     let isConnected = false;
     let padEventCount = 0;
-    let latencyPingTime = 0;
-    let uptimeSeconds = 0;
-    let uptimeInterval = null;
+    let mqttReconnectTimer = null;
+    let mqttGeneration = 0;
+    let selectedGatewayId = '';
+    let selectedCommandTopic = '';
+    let lastStreamAt = 0;
+    const MQTT_IMU_TOPIC = 'planko/imu';
+    const MQTT_PAD_TOPIC = 'planko/pad';
+    const DEFAULT_MQTT_URL = 'wss://test.mosquitto.org:8081/mqtt';
     let rhythmInterval = null;
 
     // Node Telemetry State (Nodes 1-4)
@@ -923,6 +933,11 @@
       3: { connected: false, isMock: false, pitch: 0, roll: 0, yaw: 0, ax: 0, ay: 0, az: 9.8, seq: 0, dropped: 0, lastSeen: 0 },
       4: { connected: false, isMock: false, pitch: 0, roll: 0, yaw: 0, ax: 0, ay: 0, az: 9.8, seq: 0, dropped: 0, lastSeen: 0 },
     };
+    const displayZero = {
+      1: { pitch: 0, roll: 0, yaw: 0 }, 2: { pitch: 0, roll: 0, yaw: 0 },
+      3: { pitch: 0, roll: 0, yaw: 0 }, 4: { pitch: 0, roll: 0, yaw: 0 }
+    };
+    const latestNodeData = {};
 
     // Pad Definitions with Keyboard Shortcuts
     const LEFT_PADS = [
@@ -949,15 +964,21 @@
 
     // Initialize UI on Load
     window.addEventListener('DOMContentLoaded', () => {
-      // Load saved URL from localStorage if any
-      const savedUrl = localStorage.getItem('planko_ws_url');
-      if (savedUrl) {
-        document.getElementById('wsUrl').value = savedUrl;
-      }
+      document.getElementById('mqttUrl').value = localStorage.getItem('planko_mqtt_url') || DEFAULT_MQTT_URL;
+      document.getElementById('gatewayFilter').value = localStorage.getItem('planko_gateway_filter') || '';
+      selectedGatewayId = document.getElementById('gatewayFilter').value.trim();
 
       renderPads();
       renderImuCards();
       setupKeyboardControls();
+      connectMqtt();
+      document.getElementById('gatewayFilter').addEventListener('change', () => {
+        selectedGatewayId = document.getElementById('gatewayFilter').value.trim();
+        selectedCommandTopic = '';
+        lastStreamAt = 0;
+        localStorage.setItem('planko_gateway_filter', selectedGatewayId);
+        resetNodeStates();
+      });
     });
 
     // Render Left & Right Pad Columns
@@ -1032,90 +1053,112 @@
       `).join('');
     }
 
-    // WebSocket Toggle Connect
+    // Mosquitto MQTT over WebSocket Secure (WSS)
     function toggleConnect() {
-      if (isConnected) {
-        disconnectWebSocket();
-      } else {
-        connectWebSocket();
-      }
+      if (isConnected) disconnectMqtt();
+      else connectMqtt();
     }
 
-    function connectWebSocket() {
-      const urlInput = document.getElementById('wsUrl');
-      let url = urlInput.value.trim();
-      if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
-        url = 'ws://' + url;
-        urlInput.value = url;
+    function connectMqtt() {
+      clearTimeout(mqttReconnectTimer);
+      mqttReconnectTimer = null;
+      const generation = ++mqttGeneration;
+      const previous = mqttClient;
+      mqttClient = null;
+      if (previous) {
+        previous.onConnectionLost = () => {};
+        try { previous.disconnect(); } catch (error) {}
       }
 
-      localStorage.setItem('planko_ws_url', url);
-
-      updateStatus('connecting', 'CONNECTING...');
-      logMessage('SYS', `Connecting to WebSocket: ${url}`);
+      const retry = (message) => {
+        if (generation !== mqttGeneration) return;
+        isConnected = false;
+        lastStreamAt = 0;
+        selectedCommandTopic = '';
+        updateStatus('disconnected', `${message} · retrying`);
+        document.getElementById('btnConnectText').innerText = 'Reconnect';
+        document.getElementById('btnConnect').className = 'btn btn-primary';
+        logMessage('ERR', `${message}; retrying in 4 seconds`);
+        resetNodeStates();
+        clearTimeout(mqttReconnectTimer);
+        mqttReconnectTimer = setTimeout(connectMqtt, 4000);
+      };
 
       try {
-        socket = new WebSocket(url);
-      } catch (err) {
-        logMessage('ERR', `Invalid WebSocket URL: ${err.message}`);
-        updateStatus('disconnected', 'DISCONNECTED');
-        return;
-      }
-
-      socket.onopen = () => {
-        isConnected = true;
-        updateStatus('connected', 'CONNECTED');
-        document.getElementById('btnConnectText').innerText = 'Disconnect';
-        document.getElementById('btnConnect').className = 'btn btn-danger';
-        logMessage('SYS', `✅ Connected to Gateway at ${url}`);
-        showToast('Connected to Gateway!', '🟢');
-
-        // Extract IP for stats
-        try {
-          const u = new URL(url);
-          document.getElementById('statIp').innerText = u.hostname;
-        } catch(e) {}
-
-        sendJson({ cmd: 'status' });
-
-        // Start ping interval
-        startPingTimer();
-      };
-
-      let lastMsgTime = Date.now();
-      let msgWatchdog = setInterval(() => {
-        if (isConnected && socket && (Date.now() - lastMsgTime > 2500)) {
-          logMessage('ERR', '⚠️ Gateway silence timeout (No data for 2.5s). Gateway may be unplugged.');
-          disconnectWebSocket();
+        let rawUrl = document.getElementById('mqttUrl').value.trim() || DEFAULT_MQTT_URL;
+        if (!/^[a-z]+:\/\//i.test(rawUrl)) rawUrl = `wss://${rawUrl}`;
+        const url = new URL(rawUrl);
+        if (url.protocol !== 'wss:' && url.protocol !== 'ws:') {
+          throw new Error('Enter the broker WebSocket endpoint using ws:// or wss://');
         }
-      }, 1000);
+        localStorage.setItem('planko_mqtt_url', url.href);
+        document.getElementById('mqttUrl').value = url.href;
+        if (typeof Paho === 'undefined') throw new Error('Paho MQTT client library did not load');
 
-      socket.onmessage = (event) => {
-        lastMsgTime = Date.now();
-        handleIncomingMessage(event.data);
-      };
-
-      socket.onerror = (err) => {
-        logMessage('ERR', 'WebSocket error encountered.');
-      };
-
-      socket.onclose = () => {
-        if (msgWatchdog) clearInterval(msgWatchdog);
-        isConnected = false;
-        updateStatus('disconnected', 'DISCONNECTED');
-        document.getElementById('btnConnectText').innerText = 'Connect';
-        document.getElementById('btnConnect').className = 'btn btn-primary';
-        logMessage('SYS', '❌ Disconnected from Gateway.');
-        showToast('Disconnected from Gateway', '🔴');
-        resetNodeStates();
-        stopPingTimer();
-      };
+        updateStatus('connecting', `CONNECTING TO ${url.hostname}...`);
+        logMessage('SYS', `Connecting to Mosquitto via ${url.href}`);
+        const clientId = `PlanKO_App_${Date.now().toString(16)}_${Math.random().toString(16).slice(2, 8)}`;
+        const client = new Paho.MQTT.Client(
+          url.hostname,
+          Number(url.port || (url.protocol === 'wss:' ? 443 : 80)),
+          url.pathname || '/mqtt',
+          clientId
+        );
+        mqttClient = client;
+        client.onMessageArrived = (message) => {
+          if (generation === mqttGeneration) handleMqttMessage(message);
+        };
+        client.onConnectionLost = (response) => {
+          retry(`Mosquitto connection lost${response.errorMessage ? `: ${response.errorMessage}` : ''}`);
+        };
+        client.connect({
+          useSSL: url.protocol === 'wss:', timeout: 10, keepAliveInterval: 30,
+          cleanSession: true, mqttVersion: 4,
+          onSuccess: () => {
+            if (generation !== mqttGeneration) return;
+            let pendingSubscriptions = 2;
+            const subscribed = () => {
+              if (generation !== mqttGeneration) return;
+              pendingSubscriptions--;
+              if (pendingSubscriptions !== 0) return;
+              isConnected = true;
+              document.getElementById('btnConnectText').innerText = 'Disconnect';
+              document.getElementById('btnConnect').className = 'btn btn-danger';
+              updateStatus('connecting', 'MOSQUITTO CONNECTED · WAITING FOR GATEWAY');
+              logMessage('SYS', `Subscribed to ${MQTT_IMU_TOPIC} and ${MQTT_PAD_TOPIC}`);
+            };
+            client.subscribe(MQTT_IMU_TOPIC, {
+              qos: 0, onSuccess: subscribed,
+              onFailure: (error) => retry(`Subscribe ${MQTT_IMU_TOPIC} failed${error.errorMessage ? `: ${error.errorMessage}` : ''}`)
+            });
+            client.subscribe(MQTT_PAD_TOPIC, {
+              qos: 0, onSuccess: subscribed,
+              onFailure: (error) => retry(`Subscribe ${MQTT_PAD_TOPIC} failed${error.errorMessage ? `: ${error.errorMessage}` : ''}`)
+            });
+          },
+          onFailure: (error) => retry(`Mosquitto connect failed${error.errorMessage ? `: ${error.errorMessage}` : ''}`)
+        });
+      } catch (error) {
+        retry(`MQTT setup failed: ${error.message}`);
+      }
     }
 
-    function disconnectWebSocket() {
-      if (socket) {
-        socket.close();
+    function disconnectMqtt() {
+      clearTimeout(mqttReconnectTimer);
+      mqttReconnectTimer = null;
+      mqttGeneration++;
+      isConnected = false;
+      lastStreamAt = 0;
+      selectedCommandTopic = '';
+      if (mqttClient) {
+        mqttClient.onConnectionLost = () => {};
+        try { mqttClient.disconnect(); } catch (error) {}
+        mqttClient = null;
       }
+      updateStatus('disconnected', 'DISCONNECTED');
+      document.getElementById('btnConnectText').innerText = 'Connect';
+      document.getElementById('btnConnect').className = 'btn btn-primary';
+      resetNodeStates();
     }
 
     function updateStatus(state, text) {
@@ -1124,43 +1167,60 @@
       document.getElementById('statusText').innerText = text;
     }
 
-    // Handle Incoming WebSocket Packets
-    function handleIncomingMessage(rawData) {
+    // Subscribe to the Gateway's IMU and pad topics through Mosquitto.
+    function handleMqttMessage(message) {
+      if (message.retained) return;
       try {
-        const data = JSON.parse(rawData);
-
-        // 1. IMU Stream Broadcast
-        if (data.type === 'imu_stream') {
+        const data = JSON.parse(message.payloadString);
+        if (message.destinationName === MQTT_IMU_TOPIC && data.type === 'imu_stream') {
+          const gatewayId = String(data.gateway?.clientId || '');
+          const requestedGatewayId = document.getElementById('gatewayFilter').value.trim();
+          if (!gatewayId || (requestedGatewayId && gatewayId !== requestedGatewayId)) return;
+          if (!selectedGatewayId) {
+            selectedGatewayId = gatewayId;
+            document.getElementById('gatewayFilter').value = gatewayId;
+          }
+          if (gatewayId !== selectedGatewayId) return;
+          selectedCommandTopic = data.gateway?.commandTopic || `planko/gateway/${gatewayId}/cmd`;
+          lastStreamAt = Date.now();
           handleImuStream(data);
           return;
         }
-
-        // 2. Pad Press Event
-        if (data.sensorId && data.value !== undefined) {
+        if (message.destinationName === MQTT_PAD_TOPIC && data.sensorId && data.value !== undefined) {
+          const gatewayId = String(data.gatewayId || '');
+          if (selectedGatewayId && gatewayId !== selectedGatewayId) return;
           handlePadEvent(data.sensorId);
-          return;
         }
-
-        // 3. Gateway Status Response
-        if (data.type === 'status_response') {
-          if (data.ip) document.getElementById('statIp').innerText = data.ip;
-          if (data.uptime) updateUptime(data.uptime);
-          logMessage('SYS', `Gateway Status: IP=${data.ip}, Heap=${data.heap}B, Clients=${data.wsClients}`);
-          return;
-        }
-
-        // Default: general JSON log
-        logMessage('SYS', rawData);
-      } catch (e) {
-        // Plain text message
-        logMessage('SYS', rawData);
+      } catch (error) {
+        console.warn('Ignored malformed MQTT message', error);
       }
     }
+
+    setInterval(() => {
+      if (!isConnected) return;
+      if (!lastStreamAt || Date.now() - lastStreamAt > 2500) {
+        updateStatus('connecting', 'MOSQUITTO CONNECTED · GATEWAY WAITING');
+        if (lastStreamAt) {
+          resetNodeStates();
+          lastStreamAt = 0;
+          selectedCommandTopic = '';
+        }
+        return;
+      }
+      updateStatus('connected', 'MOSQUITTO + GATEWAY LIVE');
+      document.getElementById('statLatency').innerText = `${Date.now() - lastStreamAt} ms`;
+    }, 500);
 
     // Process IMU Stream Broadcast
     function handleImuStream(data) {
       if (data.gateway) {
         document.getElementById('statNodesCount').innerText = `${data.gateway.connectedNodes || 0} / 4`;
+        document.getElementById('statIp').innerText = data.gateway.clientId || '—';
+        const totalSeconds = Math.floor((Number(data.gateway.uptimeMs) || 0) / 1000);
+        const hours = String(Math.floor(totalSeconds / 3600)).padStart(2, '0');
+        const minutes = String(Math.floor((totalSeconds % 3600) / 60)).padStart(2, '0');
+        const seconds = String(totalSeconds % 60).padStart(2, '0');
+        document.getElementById('statUptime').innerText = `${hours}:${minutes}:${seconds}`;
       }
 
       const activeNodes = new Set();
@@ -1177,6 +1237,7 @@
       // Instantly mark any node that didn't report in this packet as OFFLINE
       for (let i = 1; i <= 4; i++) {
         if (!activeNodes.has(i)) {
+          nodes[i].connected = false;
           const card = document.getElementById(`node_card_${i}`);
           const tag = document.getElementById(`node_tag_${i}`);
           if (card && card.classList.contains('connected')) {
@@ -1207,9 +1268,17 @@
       }
 
       // Angles
-      const p = (data.pitch || 0).toFixed(1);
-      const r = (data.roll || 0).toFixed(1);
-      const y = (data.yaw || 0).toFixed(1);
+      latestNodeData[id] = data;
+      nodes[id].connected = true;
+      nodes[id].pitch = Number(data.pitch) || 0;
+      nodes[id].roll = Number(data.roll) || 0;
+      nodes[id].yaw = Number(data.yaw) || 0;
+      const pitch = nodes[id].pitch - displayZero[id].pitch;
+      const roll = nodes[id].roll - displayZero[id].roll;
+      const yaw = nodes[id].yaw - displayZero[id].yaw;
+      const p = pitch.toFixed(1);
+      const r = roll.toFixed(1);
+      const y = yaw.toFixed(1);
 
       document.getElementById(`val_pitch_${id}`).innerText = `${p}°`;
       document.getElementById(`val_roll_${id}`).innerText = `${r}°`;
@@ -1228,11 +1297,12 @@
 
       // 3D Visualizer Tilt: CSS Transform rotateX/Y/Z
       // In aero terms: Pitch = rotateX, Roll = rotateY/Z
-      cube.style.transform = `rotateX(${-data.pitch}deg) rotateZ(${data.roll}deg) rotateY(${data.yaw}deg)`;
+      cube.style.transform = `rotateX(${-pitch}deg) rotateZ(${roll}deg) rotateY(${yaw}deg)`;
     }
 
     function resetNodeStates() {
       for (let i = 1; i <= 4; i++) {
+        nodes[i].connected = false;
         const card = document.getElementById(`node_card_${i}`);
         const tag = document.getElementById(`node_tag_${i}`);
         const cube = document.getElementById(`cube_${i}`);
@@ -1248,19 +1318,24 @@
 
     // Trigger Pad Event
     function triggerPad(sensorId) {
-      animatePadButton(sensorId);
-
-      padEventCount++;
-      document.getElementById('statPadEvents').innerText = padEventCount;
-
-      logMessage('PAD', `Triggered: ${sensorId}`);
-      showToast(`Pad ${sensorId} Pressed!`, '⚡');
-
-      // Send to WebSocket
-      if (isConnected && socket && socket.readyState === WebSocket.OPEN) {
-        sendJson({ cmd: 'pad', pad: sensorId });
-      } else {
-        logMessage('SYS', `⚠️ Sent locally (WebSocket not connected)`);
+      if (!isConnected || !mqttClient || !selectedGatewayId || !selectedCommandTopic) {
+        animatePadButton(sensorId);
+        logMessage('SYS', `⚠️ Local preview only: ${sensorId}; waiting for a Gateway MQTT stream`);
+        showToast('Gateway is not connected', '⚠️');
+        return;
+      }
+      try {
+        const message = new Paho.MQTT.Message(JSON.stringify({
+          cmd: 'pad', pad: sensorId, gatewayId: selectedGatewayId
+        }));
+        message.destinationName = selectedCommandTopic;
+        message.qos = 0;
+        mqttClient.send(message);
+        logMessage('PAD', `Published command for ${sensorId} to ${selectedCommandTopic}`);
+        showToast(`Pad ${sensorId} Sent`, '⚡');
+      } catch (error) {
+        logMessage('ERR', `Could not publish pad command: ${error.message}`);
+        showToast('Pad command failed', '⚠️');
       }
     }
 
@@ -1326,13 +1401,23 @@
 
     // Send Calibrate Command
     function sendCalibrateCmd() {
-      logMessage('SYS', 'Sending Zero/Calibrate command to Gateway...');
-      if (isConnected && socket) {
-        sendJson({ cmd: 'cal' });
-        showToast('Calibrate Command Sent', '🎯');
-      } else {
-        showToast('Connect to Gateway first', '⚠️');
+      let count = 0;
+      for (let id = 1; id <= 4; id++) {
+        if (!nodes[id].connected) continue;
+        displayZero[id] = {
+          pitch: nodes[id].pitch,
+          roll: nodes[id].roll,
+          yaw: nodes[id].yaw
+        };
+        count++;
+        if (latestNodeData[id]) updateNodeCard(id, latestNodeData[id]);
       }
+      if (!count) {
+        showToast('No connected IMU nodes', '⚠️');
+        return;
+      }
+      logMessage('SYS', `Zeroed displayed orientation for ${count} connected node(s)`);
+      showToast(`Zeroed ${count} node display(s)`, '🎯');
     }
 
     // Test Rhythm Demo Sequence
@@ -1362,46 +1447,6 @@
           logMessage('SYS', '✅ Routine Demo Completed.');
         }
       }, 500);
-    }
-
-    // Helpers
-    function sendJson(obj) {
-      if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify(obj));
-      }
-    }
-
-    function startPingTimer() {
-      uptimeInterval = setInterval(() => {
-        uptimeSeconds++;
-        const mins = String(Math.floor(uptimeSeconds / 60)).padStart(2, '0');
-        const secs = String(uptimeSeconds % 60).padStart(2, '0');
-        document.getElementById('statUptime').innerText = `${mins}:${secs}`;
-
-        // Measure roundtrip latency
-        if (isConnected && socket) {
-          latencyPingTime = performance.now();
-          sendJson({ cmd: 'status' });
-        }
-      }, 2000);
-    }
-
-    function stopPingTimer() {
-      if (uptimeInterval) {
-        clearInterval(uptimeInterval);
-        uptimeInterval = null;
-      }
-      uptimeSeconds = 0;
-      document.getElementById('statUptime').innerText = '00:00';
-      document.getElementById('statLatency').innerText = '-- ms';
-    }
-
-    function updateUptime(secs) {
-      if (latencyPingTime > 0) {
-        const rtt = Math.round(performance.now() - latencyPingTime);
-        document.getElementById('statLatency').innerText = `${rtt} ms`;
-        latencyPingTime = 0;
-      }
     }
 
     function logMessage(tag, msg) {

@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "model_version": "planko-6axis-phase-pilot-v1",
+  "description": "Experimental rule-based plank phase estimator. This is not a trained classifier.",
+  "sampling_hz": 20,
+  "calibration": {
+    "duration_seconds": 2.0,
+    "minimum_samples": 20,
+    "maximum_relative_angle_std_deg": 5.0
+  },
+  "sensor_pair": {
+    "upper_sites": ["chest", "upper_back"],
+    "lower_sites": ["lumbar", "pelvis"],
+    "axes_used": ["pitch", "roll"],
+    "yaw_used": false,
+    "requires_six_axis_sample": true
+  },
+  "score_thresholds": {
+    "sagittal_deg": 12.0,
+    "lateral_deg": 12.0,
+    "validated": false
+  },
+  "phase_thresholds": {
+    "normal_max": 0.6,
+    "approaching_min": 0.7,
+    "incorrect_min": 1.0,
+    "trend_deadband_per_second": 0.05,
+    "approaching_confirm_seconds": 0.3,
+    "incorrect_confirm_seconds": 0.4,
+    "recovery_confirm_seconds": 0.3,
+    "normal_confirm_seconds": 0.5,
+    "trend_window_seconds": 0.5,
+    "gap_reset_seconds": 0.15
+  },
+  "capabilities": {
+    "hip_high": "Requires a validated signed pelvis-to-thorax angle threshold and correctly mounted upper/lower sensors.",
+    "load_distribution": "Unavailable: current hardware has one pressure channel, not arm and foot force channels.",
+    "lateral_balance": "Unavailable as a validated balance classifier: requires bilateral sensors and labeled trials.",
+    "excessive_arch": "Requires a validated signed pelvis-to-thorax angle threshold and correctly mounted upper/lower sensors."
+  }
+}

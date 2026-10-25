@@ -6,6 +6,7 @@
   <meta name="theme-color" content="#0b1118">
   <title>PlanKO · IMU 3D Monitor & Dataset AI Suite</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js"></script>
+  <script src="imu_protocol.js"></script>
   <style>
     :root {
       color-scheme: dark;
@@ -289,7 +290,7 @@
     <section class="toolbar" aria-label="เครื่องมือและการตั้งค่า">
       <div class="field">
         <span>Broker:</span>
-        <input type="text" id="brokerHost" value="broker.emqx.io" readonly style="width:125px; opacity:.8;">
+        <input type="text" id="brokerHost" value="127.0.0.1" readonly style="width:165px; opacity:.8;">
       </div>
       <div class="field">
         <span>Topic:</span>
@@ -312,6 +313,11 @@
       <button id="reconnectBtn" class="btn primary" type="button">🔄 ต่อ MQTT ใหม่</button>
     </section>
 
+    <section class="toolbar" style="margin-top:12px;">
+      <label class="field">Gateway ID: <input id="gatewayFilter" placeholder="Auto-select first Gateway" style="width:220px;"></label>
+      <span id="mqttRxStats" role="status">RX: 0 | 0.0 Hz | Gaps: 0 | Duplicates: 0</span>
+      <span id="sampleContractStatus" role="status">Waiting for BLE samples with six axes</span>
+    </section>
     <!-- 3D Visualization & Telemetry Cards -->
     <div class="stage-grid">
       <!-- 3D Canvas Box -->
@@ -365,7 +371,7 @@
 
           <!-- Stream Meta -->
           <div style="display: flex; justify-content: space-between; margin-top: 12px; font-size: 11px; color: var(--muted);">
-            <span>ความถี่: <b id="fpsText" style="color:var(--mint);">0.0 Hz</b></span>
+            <span>Render: <b id="fpsText" style="color:var(--mint);">0 FPS</b></span>
             <span>Seq: <b id="seqText" style="color:var(--text);">—</b></span>
             <span>Uptime: <b id="uptimeText" style="color:var(--text);">—</b></span>
           </div>
@@ -410,22 +416,13 @@
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
           <div>
             <strong style="font-size:15px;">บันทึกข้อมูลท่าทาง (IMU Dataset Recorder)</strong>
-            <p style="margin:2px 0 0; color:var(--muted); font-size:12px;">สตรีม 20Hz ผ่าน MQTT/BLE บันทึกตรงเป็นไฟล์ CSV มาตรฐานพร้อมใช้ฝึก Model ได้ทันที</p>
+            <p style="margin:2px 0 0; color:var(--muted); font-size:12px;">IMU 20 Hz ต่อ Node · Gateway รวมทุก Node เป็น MQTT 1 ข้อความทุก 50 ms ผ่าน Mosquitto · CSV แยก Node สำหรับ train</p>
           </div>
           <span id="recStatusPill" class="rec-badge">พร้อมบันทึก (Ready)</span>
         </div>
 
         <!-- Form Grid -->
         <div class="rec-grid">
-          <label class="rec-field">ตำแหน่งติดเซนเซอร์ (Mount Site)
-            <select id="recSiteSelect"></select>
-          </label>
-          <label class="rec-field">ส่วนของร่างกาย (Body Part)
-            <select id="recBodyPartSelect"></select>
-          </label>
-          <label class="rec-field">ท่าทาง (Action Label)
-            <select id="recActionSelect"></select>
-          </label>
           <label class="rec-field">ผู้ทดสอบ (Subject ID)
             <input type="text" id="recSubjectId" value="P01" maxlength="30">
           </label>
@@ -435,13 +432,42 @@
           <label class="rec-field">Trial ID
             <input type="text" id="recTrialId" value="trial-01" maxlength="30">
           </label>
-          <label class="rec-field">ข้าง (Side)
-            <select id="recSideSelect">
-              <option value="right">ขวา (Right)</option>
-              <option value="left">ซ้าย (Left)</option>
-              <option value="unknown" selected>กึ่งกลาง / ไม่ระบุ (Center/Unknown)</option>
-            </select>
-          </label>
+        </div>
+
+        <div class="guided-box" style="border-color:rgba(116,240,194,.45);">
+          <strong>บันทึก Node หลังบนและหลังล่างพร้อมกัน</strong>
+          <p style="font-size:12px;color:var(--muted);">เลือก IMU สองตำแหน่งและเลือก Case/Action Label เพียงครั้งเดียว ทุก Node จะได้ label เดียวกัน แล้วกดเริ่มครั้งเดียวเพื่อบันทึกพร้อมกัน</p>
+          <div class="rec-grid">
+            <label class="rec-field">Node ที่ติดตั้งหลังบน
+              <select id="recUpperNodeSelect" aria-label="เลือก Node หลังบน">
+                <option value="">รอ Node...</option>
+              </select>
+            </label>
+            <label class="rec-field">Node ที่ติดตั้งหลังล่าง
+              <select id="recLowerNodeSelect" aria-label="เลือก Node หลังล่าง">
+                <option value="">รอ Node...</option>
+              </select>
+            </label>
+            <label class="rec-field">Case / Action Label (ใช้ร่วมกันทุก Node)
+              <select id="sharedActionLabel" aria-label="เลือก Case หรือ Action Label ร่วมกัน">
+                <option value="">เลือกท่าของ case...</option>
+                <option value="case_neutral">ท่าปกติ (neutral)</option>
+                <option value="case_flexion">ก้ม/งอ (flexion)</option>
+                <option value="case_extension">แอ่น/เหยียด (extension)</option>
+                <option value="case_lateral_left">เอียงซ้าย (lateral left)</option>
+                <option value="case_lateral_right">เอียงขวา (lateral right)</option>
+              </select>
+            </label>
+          </div>
+          <p id="recordPairStatus" role="status" style="margin:0;font-size:12px;color:var(--muted);">รอ IMU จริงสอง Node จาก Gateway</p>
+        </div>
+
+        <div class="guided-box">
+          <strong>สถานะ Node ใน Case เดียวกัน</strong>
+          <p style="font-size:12px;color:var(--muted);">ทุก Node ที่เลือกใช้ Case/Action Label เดียวกัน; ตำแหน่งและ UID ของแต่ละ sensor ยังคงอ่านจาก firmware</p>
+          <div id="recNodeList" class="rec-grid"><span>รอข้อมูล IMU จริงจาก Gateway…</span></div>
+          <p style="font-size:12px;color:var(--muted);">ข้อมูลอยู่ในหน่วยความจำหน้าเว็บจนกว่าจะดาวน์โหลด CSV · back ที่ติด lumbar จะเก็บเป็น body_part=lumbar ตาม taxonomy สำหรับ train และเก็บชื่อเดิมใน firmware_body_part</p>
+          <label style="font-size:12px;"><input type="checkbox" id="recPhaseReviewed"> ยืนยันว่าได้ตรวจ Phase แบบ manual แล้ว (Guided Timer จะบันทึกเป็น cue ที่ยังไม่ review)</label>
         </div>
 
         <!-- Phase Selector Bar -->
@@ -457,8 +483,8 @@
         <!-- Guided Phase Timer Box -->
         <div class="guided-box">
           <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-            <input type="checkbox" id="guidedTimerCheck" checked>
-            <b>ใช้ตัวช่วยนำจังหวะอัตโนมัติ (Guided Phase Timer)</b> พร้อมเสียงแจ้งเตือน Beep
+            <input type="checkbox" id="guidedTimerCheck">
+            <b>ใช้ตัวช่วยนำจังหวะอัตโนมัติ (Guided Phase Timer)</b> พร้อมเสียงแจ้งเตือน Beep · ไม่เลือก = บันทึกต่อเนื่องจนกดหยุดเอง
           </label>
           <p style="margin:4px 0 0; color:var(--muted); font-size:11px;">
             ลำดับเริ่มต้น: neutral 3s → approaching 3s → holding 5s → returning 3s → neutral 2s (ระบบจะเปลี่ยน Phase และจบให้อัตโนมัติ)
@@ -473,9 +499,10 @@
 
         <!-- Actions -->
         <div class="rec-actions">
-          <button id="recStartBtn" class="btn primary" type="button">🔴 เริ่มบันทึก (Start Recording)</button>
+          <button id="recStartBtn" class="btn primary" type="button">🔴 เริ่มบันทึก 2 Node พร้อมกัน</button>
           <button id="recStopBtn" class="btn danger" type="button" disabled>⏹ หยุดและดาวน์โหลด CSV (Stop & Save)</button>
           <button id="recClearBtn" class="btn" type="button">ล้างรายการ</button>
+          <button id="recDownloadAllBtn" class="btn" type="button" disabled>ดาวน์โหลดทุกไฟล์</button>
           <span id="sampleCounterText" style="margin-left:auto; font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums;">0 ตัวอย่าง (0.0s)</span>
         </div>
 
@@ -501,6 +528,84 @@
           <a href="../model_test.html" target="_blank" class="btn" style="text-decoration:none;">↗ เปิดหน้า Model Testbench เต็มรูปแบบ</a>
         </div>
 
+        <div class="rec-grid" style="margin:0 0 14px;">
+          <label class="rec-field">ตำแหน่งสำหรับ AI (Mount Site)
+            <select id="recSiteSelect"></select>
+          </label>
+          <label class="rec-field">ส่วนร่างกายสำหรับ AI (Body Part)
+            <select id="recBodyPartSelect"></select>
+          </label>
+          <label class="rec-field">ข้าง (Side)
+            <select id="recSideSelect">
+              <option value="right">ขวา (Right)</option>
+              <option value="left">ซ้าย (Left)</option>
+              <option value="unknown" selected>กึ่งกลาง / ไม่ระบุ (Center/Unknown)</option>
+            </select>
+          </label>
+        </div>
+        <p style="margin:-6px 0 14px;color:var(--muted);font-size:12px;">ค่าตำแหน่งชุดนี้ใช้กับ AI Live Inference เท่านั้น; Dataset Recorder อ่านตำแหน่งและ UID ของแต่ละ Node จาก Gateway</p>
+
+        <p id="aiModelContract" style="color:var(--muted);">Load model metadata to see supported body sites and features.</p>
+        <div class="guided-box" style="margin:14px 0;">
+          <strong>PlanKO Plank Phase Pilot · IMU 6-axis</strong>
+          <p style="margin:4px 0 10px;color:var(--muted);font-size:12px;">
+            Uses two real IMUs (upper trunk + lumbar/pelvis), mounted with matching sensor axes, a 2-second correct-plank baseline, and a rule-based trend state. This pilot is not a trained or clinically validated classifier.
+          </p>
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;">
+            <label class="field">Upper trunk node:
+              <select id="plankUpperNode" aria-label="Upper trunk IMU node">
+                <option value="1">Node #1</option><option value="2">Node #2</option>
+                <option value="3">Node #3</option><option value="4">Node #4</option>
+              </select>
+            </label>
+            <label class="field">Lumbar / pelvis node:
+              <select id="plankLowerNode" aria-label="Lumbar or pelvis IMU node">
+                <option value="1">Node #1</option><option value="2" selected>Node #2</option>
+                <option value="3">Node #3</option><option value="4">Node #4</option>
+              </select>
+            </label>
+            <button id="plankMonitorBtn" class="btn primary" type="button">Start plank monitor</button>
+            <button id="plankCalibrateBtn" class="btn" type="button" disabled>Calibrate correct plank (2 s)</button>
+          </div>
+          <p id="plankSensorStatus" role="status" style="margin:10px 0 0;font-size:12px;color:var(--muted);">
+            Select two connected IMUs. Expected mount sites: chest/upper_back and lumbar/pelvis.
+          </p>
+          <div class="ai-grid">
+            <div class="ai-card"><small>Paired plank phase</small><strong id="plankOutPhase">unknown</strong></div>
+            <div class="ai-card"><small>Largest angular deviation</small><strong id="plankOutError">—</strong></div>
+            <div class="ai-card"><small>Normalized error E</small><strong id="plankOutScore">—</strong></div>
+            <div class="ai-card"><small>Trend V (E/s)</small><strong id="plankOutTrend">—</strong></div>
+            <div class="ai-card"><small>Relative pitch delta</small><strong id="plankOutPitch">—</strong></div>
+            <div class="ai-card"><small>Relative roll delta</small><strong id="plankOutRoll">—</strong></div>
+            <div class="ai-card"><small>Upper trunk · Node phase / E / V</small><strong id="plankOutUpper">unknown</strong><small id="plankUpperMeta">—</small></div>
+            <div class="ai-card"><small>Lumbar / pelvis · Node phase / E / V</small><strong id="plankOutLower">unknown</strong><small id="plankLowerMeta">—</small></div>
+          </div>
+          <p id="plankCapabilityText" style="margin:8px 0 0;font-size:11px;color:var(--muted);">
+            Six-axis pilot uses fused pitch/roll and ignores yaw. E and V are deviation indicators, not Accuracy %. Accuracy requires labeled trials. The 12° score scales are provisional. Load distribution needs separate arm and foot force sensors; this Gateway has one pressure channel.
+          </p>
+          <details class="guided-box">
+            <summary style="cursor:pointer;font-weight:700;">Record labeled Plank trials for Accuracy evaluation</summary>
+            <p style="font-size:11px;color:var(--muted);">Annotate the reference phase separately for the paired output and each Node while recording. Review labels against video before using the resulting percentage.</p>
+            <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;">
+              <label class="field">Subject ID: <input id="plankEvalSubject" value="P01" maxlength="30" style="width:90px;"></label>
+              <label class="field">Session ID: <input id="plankEvalSession" value="S01" maxlength="30" style="width:90px;"></label>
+              <label class="field">Trial ID: <input id="plankEvalTrial" value="plank-trial-01" maxlength="40" style="width:130px;"></label>
+              <label class="field">Pair truth:
+                <select id="plankTruthPair"><option value="unlabeled">Unlabeled</option><option value="normal">Normal</option><option value="phase1_approaching_error">Phase 1</option><option value="phase2_incorrect_posture">Phase 2</option><option value="phase3_recovery_trend">Phase 3</option></select>
+              </label>
+              <label class="field">Upper Node truth:
+                <select id="plankTruthUpper"><option value="unlabeled">Unlabeled</option><option value="normal">Normal</option><option value="phase1_approaching_error">Phase 1</option><option value="phase2_incorrect_posture">Phase 2</option><option value="phase3_recovery_trend">Phase 3</option></select>
+              </label>
+              <label class="field">Lower Node truth:
+                <select id="plankTruthLower"><option value="unlabeled">Unlabeled</option><option value="normal">Normal</option><option value="phase1_approaching_error">Phase 1</option><option value="phase2_incorrect_posture">Phase 2</option><option value="phase3_recovery_trend">Phase 3</option></select>
+              </label>
+              <button id="plankEvalStartBtn" class="btn primary" type="button" disabled>Start labeled capture</button>
+              <button id="plankEvalStopBtn" class="btn" type="button" disabled>Stop & download CSV</button>
+              <span id="plankEvalCount" role="status">0 labeled prediction rows</span>
+            </div>
+            <div id="plankEvalDownloadList" class="download-list"></div>
+          </details>
+        </div>
         <div class="ai-grid">
           <div class="ai-card">
             <small>ท่าทางที่ทำนาย (Predicted Action)</small>
@@ -601,10 +706,24 @@
     let targetRoll = 0, targetPitch = 0, targetYaw = 0;
     let currentRoll = 0, currentPitch = 0, currentYaw = 0;
 
-    // FPS / Rate measurement
-    let packetCount = 0;
-    let lastFpsCalcTime = Date.now();
-    let currentFps = 0;
+    const inferenceWindow = new PlanKOImu.SampleWindow();
+    let latestSample = null;
+    let lastSampleArrival = 0;
+    let modelMetadata = null;
+    let lastInferenceKey = "";
+    let plankMonitorActive = false;
+    let plankCalibrating = false;
+    let plankCalibrated = false;
+    let plankCalibrationFrames = [];
+    let plankCalibrationStartedAt = 0;
+    let plankLastPairSeq = null;
+    let plankLastPairSignature = "";
+    let plankRuntimeKey = "";
+    let plankRequestInFlight = false;
+    let plankRequestSerial = 0;
+    const plankPageSession = `${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 8)}`;
+    let plankEvaluationRecording = false;
+    let plankEvaluationRows = [];
 
     // -------------------------------------------------------------
     // POSE & TAXONOMY CONFIG (From pose_labels.json)
@@ -673,7 +792,6 @@
     // Populate Select Dropdowns
     const recSiteSelect = $("recSiteSelect");
     const recBodyPartSelect = $("recBodyPartSelect");
-    const recActionSelect = $("recActionSelect");
 
     Object.entries(POSE_TAXONOMY.mount_sites).forEach(([k, v]) => {
       const opt = document.createElement("option");
@@ -687,29 +805,23 @@
       recBodyPartSelect.appendChild(opt);
     });
 
-    function updateActionDropdown() {
+    function syncInferenceMountSite() {
       const selectedBody = recBodyPartSelect.value;
-      recActionSelect.innerHTML = "";
-      const actions = POSE_TAXONOMY.body_parts[selectedBody]?.actions || [];
-      actions.forEach(act => {
-        const opt = document.createElement("option");
-        opt.value = act.id; opt.textContent = act.label;
-        recActionSelect.appendChild(opt);
-      });
-      // Set default mount site matching body part if available
       if (POSE_TAXONOMY.mount_sites[selectedBody]) {
         recSiteSelect.value = selectedBody;
       }
     }
-    recBodyPartSelect.addEventListener("change", updateActionDropdown);
+    recBodyPartSelect.addEventListener("change", syncInferenceMountSite);
     recBodyPartSelect.value = "neck";
-    updateActionDropdown();
+    syncInferenceMountSite();
 
     // -------------------------------------------------------------
     // DATASET RECORDING LOGIC
     // -------------------------------------------------------------
     let isRecording = false;
-    let recordedSamples = [];
+    const datasetRecorder = new PlanKOImu.MultiNodeRecorder();
+    const captureNodes = new Map();
+    const captureDownloads = [];
     let recordStartTime = 0;
     let currentPhase = "neutral";
     let guidedStepIndex = 0;
@@ -772,20 +884,185 @@
     const guidedTimerCheck = $("guidedTimerCheck");
     const guidedProgressBar = $("guidedProgressBar");
     const guidedText = $("guidedText");
+    const recUpperNodeSelect = $("recUpperNodeSelect");
+    const recLowerNodeSelect = $("recLowerNodeSelect");
+    const sharedActionLabel = $("sharedActionLabel");
+    let recordingNodeIds = new Set();
+    const NODE_HOLD_MS = 2000;
 
-    let lastRecordedSeq = null;
-    let lastRecordedTs = null;
+    function liveCaptureNodeEntries() {
+      const byNodeId = new Map();
+      for (const entry of captureNodes.values()) {
+        if (!entry.lastValidNode || Date.now() - entry.lastValidAt >= NODE_HOLD_MS) continue;
+        byNodeId.set(Number(entry.node.nodeId), entry);
+      }
+      return [...byNodeId.values()].sort((a, b) => Number(a.node.nodeId) - Number(b.node.nodeId));
+    }
+
+    function refreshRecordPairOptions() {
+      if (isRecording) return;
+      const entries = liveCaptureNodeEntries();
+      const nodes = entries.map(entry => entry.node);
+      const fill = (select, preferredSites, fallbackId, excludeId) => {
+        const previous = select.value;
+        const available = nodes.filter(node => Number(node.nodeId) !== Number(excludeId));
+        select.replaceChildren(new Option("เลือก Node...", ""));
+        for (const node of nodes) {
+          const context = (node.mount_site || "site?") + " / " + (PlanKOImu.trainingBody(node) || "body?");
+          select.appendChild(new Option("Node #" + node.nodeId + " · " + context, String(node.nodeId)));
+        }
+        const preserved = available.find(node => String(node.nodeId) === previous);
+        const preferred = available.find(node => preferredSites.includes(node.mount_site)) ||
+          available.find(node => Number(node.nodeId) === fallbackId) || available[0];
+        select.value = String((preserved || preferred)?.nodeId || "");
+      };
+      fill(recUpperNodeSelect, ["upper_back", "chest"], 1, 0);
+      fill(recLowerNodeSelect, ["lumbar", "pelvis"], 2, Number(recUpperNodeSelect.value) || 0);
+      updateRecordPairStatus();
+    }
+
+    function updateRecordPairStatus() {
+      const byId = new Map(liveCaptureNodeEntries().map(entry => [Number(entry.node.nodeId), entry]));
+      const upper = byId.get(Number(recUpperNodeSelect.value));
+      const lower = byId.get(Number(recLowerNodeSelect.value));
+      const status = $("recordPairStatus");
+      if (!upper || !lower || upper === lower) {
+        status.textContent = "ต้องมี IMU จริงสอง Node ที่แยกกัน ก่อนเริ่มบันทึก";
+        status.style.color = "var(--orange)";
+        return;
+      }
+      const upperSite = upper.node.mount_site || "ไม่ระบุตำแหน่ง";
+      const lowerSite = lower.node.mount_site || "ไม่ระบุตำแหน่ง";
+      const warnings = [];
+      if (!["upper_back", "chest"].includes(upper.node.mount_site)) warnings.push("หลังบนใช้ firmware site=" + upperSite);
+      if (!["lumbar", "pelvis"].includes(lower.node.mount_site)) warnings.push("หลังล่างใช้ firmware site=" + lowerSite);
+      if (!sharedActionLabel.value) warnings.push("เลือก Case/Action Label กลางก่อนเริ่ม");
+      const upperState = upper.present && upper.currentValid ? "LIVE" : "HOLD";
+      const lowerState = lower.present && lower.currentValid ? "LIVE" : "HOLD";
+      status.textContent = "พร้อมบันทึกพร้อมกัน: หลังบน Node #" + upper.node.nodeId + " " + upperState + " (" + upperSite + ") + หลังล่าง Node #" + lower.node.nodeId + " " + lowerState + " (" + lowerSite + ") · Case: " + (sharedActionLabel.value || "ยังไม่เลือก") +
+        (warnings.length ? " · ตรวจสอบ: " + warnings.join("; ") : "");
+      status.style.color = warnings.length ? "var(--orange)" : "var(--mint)";
+    }
+
+    recUpperNodeSelect.addEventListener("change", () => {
+      refreshRecordPairOptions();
+      refreshCaptureStats();
+    });
+    recLowerNodeSelect.addEventListener("change", () => {
+      refreshRecordPairOptions();
+      refreshCaptureStats();
+    });
+    sharedActionLabel.addEventListener("change", updateRecordPairStatus);
+
+    function updateCaptureNodes(message) {
+      const now = Date.now();
+      for (const entry of captureNodes.values()) {
+        entry.present = false;
+        entry.currentValid = false;
+      }
+      for (const node of message.nodes || []) {
+        const key = PlanKOImu.nodeKey(message, node);
+        let entry = captureNodes.get(key);
+        if (!entry) {
+          const card = document.createElement("div");
+          card.className = "rec-field";
+          const title = document.createElement("strong");
+          const context = document.createElement("span");
+          const status = document.createElement("span");
+          status.setAttribute("role", "status");
+          card.append(title, context, status);
+          if (!captureNodes.size) $("recNodeList").replaceChildren();
+          $("recNodeList").appendChild(card);
+          entry = {card, title, context, status, node, lastSeen: now,
+            lastValidAt: 0, lastValidNode: null, valid: false, currentValid: false, present: false};
+          captureNodes.set(key, entry);
+        }
+        entry.present = true;
+        entry.lastSeen = now;
+        try {
+          PlanKOImu.sampleFromMessage(message, node, {
+            mount_site: node.mount_site, body_part: node.body_part, side: node.side || "unknown"
+          });
+          entry.valid = !!node.sensor_uid && !!node.mount_site && !!node.body_part;
+          entry.currentValid = entry.valid;
+          if (entry.valid) {
+            entry.node = node;
+            entry.lastValidNode = node;
+            entry.lastValidAt = now;
+          }
+        } catch (error) {
+          entry.valid = false;
+          entry.error = error.message;
+        }
+        if (!entry.currentValid && entry.lastValidNode && now - entry.lastValidAt < NODE_HOLD_MS) {
+          entry.node = entry.lastValidNode;
+          entry.valid = true;
+        } else if (!entry.currentValid) {
+          entry.node = node;
+        }
+        entry.title.textContent = `Node #${entry.node.nodeId} · ${entry.node.sensor_uid || "UID missing"}`;
+        entry.context.textContent = `${entry.node.mount_site || "site?"} / ${PlanKOImu.trainingBody(entry.node) || "body?"} / ${entry.node.side || "unknown"}`;
+      }
+      refreshRecordPairOptions();
+    }
+
+    function refreshCaptureStats() {
+      let total = 0;
+      const upperId = Number(recUpperNodeSelect.value);
+      const lowerId = Number(recLowerNodeSelect.value);
+      for (const [key, entry] of captureNodes) {
+        const stream = datasetRecorder.streams.get(key);
+        const count = stream?.rows.length || 0;
+        total += count;
+        const holdAge = Date.now() - entry.lastValidAt;
+        const live = !!entry.lastValidNode && holdAge < NODE_HOLD_MS;
+        const current = live && entry.present && entry.currentValid;
+        const recent = stream?.window.rows || [];
+        const span = recent.length > 1 ? recent.at(-1).device_time_s - recent[0].device_time_s : 0;
+        const rate = live && span > 0 ? ((recent.length - 1) / span).toFixed(1) + " Hz" : "— Hz";
+        const role = Number(entry.node.nodeId) === upperId ? "หลังบน" : Number(entry.node.nodeId) === lowerId ? "หลังล่าง" : "ไม่เลือก";
+        const linkState = current ? "LIVE" : live ? "HOLD" : "รอ IMU จริง";
+        entry.status.textContent = `${linkState} · ${role} · ${rate} · ${count} samples · ขาด ${stream?.missing || 0} · ตัดซ้ำ ${stream?.duplicates || 0} · ไม่ครบ ${stream?.invalid || 0}`;
+        entry.status.style.color = current ? "var(--mint)" : "var(--orange)";
+      }
+      updateRecordPairStatus();
+      if (isRecording) sampleCounterText.textContent = `${total.toLocaleString()} samples · ${datasetRecorder.streams.size} Node/contexts · ${((Date.now() - recordStartTime) / 1000).toFixed(1)}s`;
+    }
+    setInterval(refreshCaptureStats, 500);
+
+    function recordingControls(active) {
+      for (const id of ["gatewayFilter", "recSubjectId", "recSessionId", "recTrialId", "guidedTimerCheck", "recPhaseReviewed", "recClearBtn", "recUpperNodeSelect", "recLowerNodeSelect", "sharedActionLabel"]) $(id).disabled = active;
+      recStartBtn.disabled = active;
+      recStopBtn.disabled = !active;
+    }
 
     recStartBtn.addEventListener("click", () => {
-      isRecording = true;
-      recordedSamples = [];
-      lastRecordedSeq = null;
-      lastRecordedTs = null;
+      const upperId = Number(recUpperNodeSelect.value);
+      const lowerId = Number(recLowerNodeSelect.value);
+      if (!Number.isInteger(upperId) || !Number.isInteger(lowerId) || upperId < 1 || lowerId < 1 || upperId === lowerId) {
+        alert("เลือก Node หลังบนและหลังล่างให้เป็นคนละ Node ก่อนเริ่ม"); return;
+      }
+      const liveById = new Map(liveCaptureNodeEntries().map(entry => [Number(entry.node.nodeId), entry]));
+      const selectedEntries = [liveById.get(upperId), liveById.get(lowerId)];
+      if (selectedEntries.some(entry => !entry)) {
+        alert("รอข้อมูล IMU จริงของ Node หลังบนและหลังล่างจาก Gateway ก่อนเริ่ม"); return;
+      }
+      if (!sharedActionLabel.value) { alert("เลือก Case/Action Label กลางที่จะใช้กับทุก Node ก่อนเริ่ม"); return; }
+      const metadata = {};
+      for (const [key, id] of [["subject_id", "recSubjectId"], ["session_id", "recSessionId"], ["trial_id", "recTrialId"]]) {
+        metadata[key] = $(id).value.trim();
+        if (!metadata[key]) { alert("กรอก Subject, Session และ Trial ID ให้ครบ"); return; }
+      }
+      const gatewayId = $("gatewayFilter").value.trim();
+      if (!gatewayId) { alert("เลือก Gateway ID ก่อนเริ่มบันทึก"); return; }
+      metadata.action_label = sharedActionLabel.value;
+      recordingNodeIds = new Set([upperId, lowerId]);
       recordStartTime = Date.now();
-      recStartBtn.disabled = true;
-      recStopBtn.disabled = false;
+      datasetRecorder.start(gatewayId, metadata, recordStartTime);
+      isRecording = true;
+      recordingControls(true);
       recStatusPill.className = "rec-badge recording";
-      recStatusPill.textContent = "● กำลังบันทึก (Recording)";
+      recStatusPill.textContent = `● ${sharedActionLabel.value} · Node #${upperId} + #${lowerId} · ${gatewayId}`;
       playBeep(660, 0.2);
 
       if (guidedTimerCheck.checked) {
@@ -833,85 +1110,411 @@
       updateGuided();
     }
 
-    function stopRecordingAndExport() {
-      isRecording = false;
-      if (guidedTimerId) clearTimeout(guidedTimerId);
-      recStartBtn.disabled = false;
-      recStopBtn.disabled = true;
-      recStatusPill.className = "rec-badge";
-      recStatusPill.textContent = "บันทึกเสร็จสิ้น (Done)";
-      guidedProgressBar.style.width = "100%";
-      guidedText.textContent = "บันทึกเสร็จสมบูรณ์";
-
-      if (recordedSamples.length === 0) {
-        alert("ไม่พบตัวอย่างข้อมูล IMU ระหว่างบันทึก กรุณาตรวจสอบสถานะการเชื่อมต่อ MQTT/Node");
-        return;
-      }
-
-      // Generate Standard CSV
-      const columns = [
-        "sensor_uid", "mount_site", "body_part", "side", "subject_id", "session_id", "trial_id",
-        "action_label", "phase_label", "phase_annotation_reviewed", "host_time_iso", "host_time_s",
-        "boot_ms", "seq", "accel_x", "accel_y", "accel_z", "gyro_x", "gyro_y", "gyro_z",
-        "roll_deg", "pitch_deg", "yaw_deg", "calibrated", "valid", "firmware_status"
-      ];
-
-      const lines = [columns.join(",")];
-      recordedSamples.forEach(row => {
-        const line = columns.map(col => {
-          let val = row[col];
-          if (val === undefined || val === null) return "";
-          val = String(val);
-          if (val.includes(",") || val.includes('"')) {
-            val = '"' + val.replace(/"/g, '""') + '"';
-          }
-          return val;
-        }).join(",");
-        lines.push(line);
-      });
-
-      const csvContent = "\uFEFF" + lines.join("\r\n");
-      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-
-      const subject = $("recSubjectId").value.trim() || "P01";
-      const site = recSiteSelect.value;
-      const action = recActionSelect.value;
-      const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-      const filename = `${subject}_${site}_${action}_${dateStr}.csv`;
-
-      // Create download link element
+    function addCaptureDownload(filename, content, type) {
+      const url = URL.createObjectURL(new Blob([content], {type}));
       const link = document.createElement("a");
       link.className = "csv-link";
       link.href = url;
       link.download = filename;
-      link.innerHTML = `<span>📥 <b>${filename}</b> (${recordedSamples.length.toLocaleString()} ตัวอย่าง)</span> <span style="color:var(--text); font-size:11px;">คลิกเพื่อดาวน์โหลด</span>`;
+      link.textContent = `?? ${filename}`;
       $("recDownloadList").prepend(link);
-
-      // Trigger immediate download
-      const tempA = document.createElement("a");
-      tempA.href = url;
-      tempA.download = filename;
-      document.body.appendChild(tempA);
-      tempA.click();
-      document.body.removeChild(tempA);
+      captureDownloads.push({url, filename});
     }
 
-    $("recClearBtn").addEventListener("click", () => {
-      $("recDownloadList").innerHTML = "";
-      sampleCounterText.textContent = "0 ตัวอย่าง (0.0s)";
+    function stopRecordingAndExport() {
+      if (!isRecording) return;
+      isRecording = false;
+      datasetRecorder.stop();
+      recordingNodeIds.clear();
+      if (guidedTimerId) clearTimeout(guidedTimerId);
+      recordingControls(false);
       recStatusPill.className = "rec-badge";
-      recStatusPill.textContent = "พร้อมบันทึก (Ready)";
+      guidedProgressBar.style.width = "100%";
+      const safe = value => String(value).replace(/[^a-zA-Z0-9_.-]/g, "_");
+      const stamp = new Date(recordStartTime).toISOString().replace(/[:.]/g, "-");
+      const base = `${safe(datasetRecorder.metadata.subject_id)}_${safe(datasetRecorder.metadata.session_id)}_${safe(datasetRecorder.metadata.trial_id)}_${stamp}`;
+      const manifest = datasetRecorder.manifest();
+      let total = 0, files = 0;
+      [...datasetRecorder.streams.values()].forEach((stream, index) => {
+        if (!stream.rows.length) return;
+        total += stream.rows.length;
+        files++;
+        const name = `${base}_node${stream.nodeId}_${safe(stream.sensorUid)}_${safe(stream.mountSite)}_${index + 1}.csv`;
+        manifest.streams[index].file = name;
+        addCaptureDownload(name, PlanKOImu.csv(stream.rows), "text/csv;charset=utf-8");
+      });
+      if (!total) {
+        recStatusPill.textContent = "????? sample ??????????????";
+        guidedText.textContent = "??????? Gateway, Node ????????? IMU 6 ???";
+        return;
+      }
+      addCaptureDownload(`${base}_manifest.json`, JSON.stringify(manifest, null, 2), "application/json");
+      $("recDownloadAllBtn").disabled = false;
+      recStatusPill.textContent = `?????????????? ${files} CSV`;
+      sampleCounterText.textContent = `${total.toLocaleString()} samples ? ${files} CSV`;
+      guidedText.textContent = "????????? CSV ??? Node ??? manifest ???????????????????????; Phase ??? timer ??????? review ??????? train phase";
+      refreshCaptureStats();
+    }
+
+    $("recDownloadAllBtn").addEventListener("click", () => {
+      // Browsers may ask the user to allow multiple downloads. Individual links remain available.
+      for (const file of captureDownloads) {
+        const link = document.createElement("a");
+        link.href = file.url; link.download = file.filename;
+        document.body.appendChild(link); link.click(); link.remove();
+      }
     });
+    $("recClearBtn").addEventListener("click", () => {
+      if (isRecording) return;
+      for (const file of captureDownloads.splice(0)) URL.revokeObjectURL(file.url);
+      $("recDownloadList").replaceChildren();
+      $("recDownloadAllBtn").disabled = true;
+      datasetRecorder.streams.clear();
+      sampleCounterText.textContent = "0 samples";
+      recStatusPill.className = "rec-badge";
+      recStatusPill.textContent = "??????????? (Ready)";
+      refreshCaptureStats();
+    });
+    window.addEventListener("beforeunload", event => {
+      if (isRecording || captureDownloads.length) { event.preventDefault(); event.returnValue = ""; }
+    });
+
+    // -------------------------------------------------------------
+    // EXPERIMENTAL PLANK PHASE TRACKER (paired six-axis IMUs)
+    // -------------------------------------------------------------
+    const plankPhaseLabels = {
+      normal: "Normal",
+      phase1_approaching_error: "Phase 1 · Approaching Error",
+      phase2_incorrect_posture: "Phase 2 · Incorrect Posture",
+      phase3_recovery_trend: "Phase 3 · Recovery Trend",
+      unknown: "unknown"
+    };
+
+    function updatePlankNodeOptions(nodes) {
+      for (const id of ["plankUpperNode", "plankLowerNode"]) {
+        const select = $(id);
+        const selected = select.value;
+        for (const option of select.options) {
+          const node = nodes.find(item => Number(item.nodeId) === Number(option.value));
+          option.textContent = node
+            ? `Node #${node.nodeId} · ${node.mount_site || "site?"} / ${node.body_part || "part?"}${node.isMock ? " (mock)" : ""}`
+            : `Node #${option.value} · offline`;
+        }
+        select.value = selected;
+      }
+    }
+
+    function resetPlankReadout(reason = "Select two connected IMUs, then calibrate while holding a correct plank for 2 seconds.") {
+      $("plankOutPhase").textContent = "unknown";
+      $("plankOutError").textContent = "—";
+      $("plankOutScore").textContent = "—";
+      $("plankOutTrend").textContent = "—";
+      $("plankOutPitch").textContent = "—";
+      $("plankOutRoll").textContent = "—";
+      $("plankOutUpper").textContent = "unknown";
+      $("plankUpperMeta").textContent = "—";
+      $("plankOutLower").textContent = "unknown";
+      $("plankLowerMeta").textContent = "—";
+      $("plankSensorStatus").textContent = reason;
+    }
+
+    function setPlankOutput(result, frame = null) {
+      $("plankOutPhase").textContent = plankPhaseLabels[result.phase] || result.phase || "unknown";
+      $("plankOutError").textContent = [result.error_type, result.error_direction].filter(Boolean).join(" · ") || "—";
+      $("plankOutScore").textContent = Number.isFinite(result.error_score) ? `${result.error_score.toFixed(2)} E` : "—";
+      $("plankOutTrend").textContent = Number.isFinite(result.trend_per_second) ? `${result.trend_per_second.toFixed(2)} /s` : "warming up";
+      $("plankOutPitch").textContent = Number.isFinite(result.delta_pitch_deg) ? `${result.delta_pitch_deg.toFixed(1)}°` : "—";
+      $("plankOutRoll").textContent = Number.isFinite(result.delta_roll_deg) ? `${result.delta_roll_deg.toFixed(1)}°` : "—";
+      for (const [part, phaseId, metaId] of [
+        ["upper", "plankOutUpper", "plankUpperMeta"],
+        ["lower", "plankOutLower", "plankLowerMeta"]
+      ]) {
+        const node = result.nodes?.[part];
+        $(phaseId).textContent = node
+          ? `Node #${node.node_id} · ${plankPhaseLabels[node.phase] || node.phase}`
+          : "unknown";
+        $(metaId).textContent = node
+          ? `E ${Number.isFinite(node.error_score) ? node.error_score.toFixed(2) : "—"} · V ${Number.isFinite(node.trend_per_second) ? node.trend_per_second.toFixed(2) : "—"}/s · ${node.mount_site}`
+          : "—";
+      }
+      if (result.reason && result.reason !== "experimental_rule_based_phase") {
+        $("plankSensorStatus").textContent = `Plank monitor: ${result.reason}`;
+      } else if (result.phase === "unknown") {
+        $("plankSensorStatus").textContent = "Collecting a continuous paired 20 Hz trend window…";
+      } else {
+        $("plankSensorStatus").textContent = `${result.thresholds_validated ? "Configured thresholds" : "Provisional thresholds"} · rule-based output, not a trained classifier`;
+      }
+      if (plankEvaluationRecording && frame) recordPlankEvaluation(result, frame);
+    }
+
+    function recordPlankEvaluation(result, frame) {
+      const upper = result.nodes?.upper || {};
+      const lower = result.nodes?.lower || {};
+      plankEvaluationRows.push({
+        timestamp_iso: new Date().toISOString(), received_time_s: frame.received_time_s,
+        subject_id: $("plankEvalSubject").value.trim() || "P01",
+        session_id: $("plankEvalSession").value.trim() || "S01",
+        trial_id: $("plankEvalTrial").value.trim() || "plank-trial",
+        gateway_id: frame.gateway_id, mqtt_seq: frame.mqtt_seq,
+        upper_node_id: frame.upper.node_id, upper_sensor_uid: frame.upper.sensor_uid,
+        upper_mount_site: frame.upper.mount_site, upper_body_part: frame.upper.body_part,
+        upper_seq: frame.upper.seq,
+        lower_node_id: frame.lower.node_id, lower_sensor_uid: frame.lower.sensor_uid,
+        lower_mount_site: frame.lower.mount_site, lower_body_part: frame.lower.body_part,
+        lower_seq: frame.lower.seq,
+        truth_pair: $("plankTruthPair").value, pred_pair: result.phase || "unknown",
+        pair_error_type: result.error_type || "", pair_error_score: result.error_score ?? "",
+        pair_trend_per_second: result.trend_per_second ?? "",
+        truth_upper: $("plankTruthUpper").value, pred_upper: upper.phase || "unknown",
+        upper_error_score: upper.error_score ?? "", upper_trend_per_second: upper.trend_per_second ?? "",
+        truth_lower: $("plankTruthLower").value, pred_lower: lower.phase || "unknown",
+        lower_error_score: lower.error_score ?? "", lower_trend_per_second: lower.trend_per_second ?? ""
+      });
+      $("plankEvalCount").textContent = `${plankEvaluationRows.length} prediction rows recorded`;
+    }
+
+    function finishPlankEvaluation() {
+      if (!plankEvaluationRecording) return;
+      plankEvaluationRecording = false;
+      $("plankEvalStartBtn").disabled = !plankMonitorActive || !plankCalibrated;
+      $("plankEvalStopBtn").disabled = true;
+      if (!plankEvaluationRows.length) {
+        $("plankEvalCount").textContent = "No prediction rows were recorded";
+        return;
+      }
+      const columns = Object.keys(plankEvaluationRows[0]);
+      const quote = value => {
+        const text = String(value ?? "");
+        return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+      };
+      const csv = [columns.join(","), ...plankEvaluationRows.map(row => columns.map(key => quote(row[key])).join(","))].join("\r\n");
+      const blob = new Blob(["\uFEFF", csv], {type: "text/csv;charset=utf-8"});
+      const url = URL.createObjectURL(blob);
+      const trial = ($("plankEvalTrial").value.trim() || "plank-trial").replace(/[^a-z0-9_-]/gi, "_");
+      const link = document.createElement("a");
+      link.className = "csv-link";
+      link.href = url;
+      link.download = `${trial}_plank_phase_predictions.csv`;
+      link.textContent = `Download ${link.download} (${plankEvaluationRows.length} rows)`;
+      $("plankEvalDownloadList").prepend(link);
+      link.click();
+      $("plankEvalCount").textContent = `${plankEvaluationRows.length} rows saved · pair / upper / lower labels are evaluated separately`;
+      plankEvaluationRows = [];
+    }
+
+    $("plankEvalStartBtn").addEventListener("click", () => {
+      if (!plankMonitorActive || !plankCalibrated) return;
+      plankEvaluationRows = [];
+      plankEvaluationRecording = true;
+      $("plankEvalStartBtn").disabled = true;
+      $("plankEvalStopBtn").disabled = false;
+      $("plankEvalCount").textContent = "Recording labeled predictions · update reference labels during the trial";
+    });
+    $("plankEvalStopBtn").addEventListener("click", finishPlankEvaluation);
+
+    function plankNodePayload(node) {
+      return {
+        node_id: Number(node.nodeId), sensor_uid: node.sensor_uid || `node-${node.nodeId}`,
+        mount_site: node.mount_site, body_part: node.body_part, side: node.side || "unknown",
+        seq: Number(node.seq), pitch: Number(node.pitch), roll: Number(node.roll),
+        accel: node.accel, gyro: node.gyro, valid: node.valid === true,
+        isMock: node.isMock === true, calibrated: node.calibrated === true
+      };
+    }
+
+    function plankApiBase() {
+      return $("aiHost").value.trim().replace(/\/$/, "");
+    }
+
+    async function sendPlankCalibration() {
+      const streamKey = plankRuntimeKey;
+      const frames = plankCalibrationFrames.slice();
+      plankCalibrating = false;
+      plankCalibrationFrames = [];
+      $("plankCalibrateBtn").disabled = true;
+      $("plankSensorStatus").textContent = `Checking ${frames.length} baseline samples for a stable normal plank…`;
+      try {
+        const response = await fetch(`${plankApiBase()}/api/plank/calibrate`, {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({stream_key: streamKey, frames}),
+          signal: AbortSignal.timeout(5000)
+        });
+        const result = await response.json();
+        if (!response.ok || !result.ready) throw new Error(result.reason || `HTTP ${response.status}`);
+        plankCalibrated = true;
+        $("plankSensorStatus").textContent = `Baseline saved · ${result.sample_count} samples, ${result.duration_seconds.toFixed(1)} s · pitch σ ${result.pitch_std_deg.toFixed(1)}°, roll σ ${result.roll_std_deg.toFixed(1)}°`;
+        $("plankCalibrateBtn").disabled = false;
+        $("plankEvalStartBtn").disabled = !plankMonitorActive;
+      } catch (error) {
+        plankCalibrated = false;
+        $("plankSensorStatus").textContent = `Calibration failed: ${error.message}. Check sensor mounting and hold the correct plank still, then retry.`;
+        $("plankCalibrateBtn").disabled = false;
+        $("plankEvalStartBtn").disabled = true;
+      }
+    }
+
+    async function sendPlankPrediction(frame, streamKey) {
+      if (plankRequestInFlight) return;
+      plankRequestInFlight = true;
+      const serial = ++plankRequestSerial;
+      try {
+        const response = await fetch(`${plankApiBase()}/api/plank/frame`, {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({stream_key: streamKey, frame}),
+          signal: AbortSignal.timeout(1500)
+        });
+        const result = await response.json();
+        if (!response.ok || !result.ready) {
+          if (serial === plankRequestSerial) {
+            plankCalibrated = false;
+            $("plankEvalStartBtn").disabled = true;
+            resetPlankReadout(`Plank phase unavailable: ${result.reason || `HTTP ${response.status}`}. Recalibrate if the sensor pair changed.`);
+          }
+          return;
+        }
+        if (serial === plankRequestSerial && plankMonitorActive) setPlankOutput(result, frame);
+      } catch (error) {
+        if (serial === plankRequestSerial) resetPlankReadout(`Plank API unavailable: ${error.message}`);
+      } finally {
+        plankRequestInFlight = false;
+      }
+    }
+
+    function processPlankMessage(data) {
+      if (!plankMonitorActive || !Array.isArray(data.nodes)) return;
+      const upperId = Number($("plankUpperNode").value);
+      const lowerId = Number($("plankLowerNode").value);
+      if (upperId === lowerId) {
+        resetPlankReadout("Choose two different IMU nodes for upper trunk and lumbar/pelvis.");
+        return;
+      }
+      const upperRaw = data.nodes.find(item => Number(item.nodeId) === upperId);
+      const lowerRaw = data.nodes.find(item => Number(item.nodeId) === lowerId);
+      if (!upperRaw || !lowerRaw) {
+        resetPlankReadout("Waiting for both selected IMUs to connect to the Gateway.");
+        return;
+      }
+      const upper = plankNodePayload(upperRaw);
+      const lower = plankNodePayload(lowerRaw);
+      if (!upper.valid || !lower.valid || upper.isMock || lower.isMock ||
+          !Number.isInteger(upper.seq) || !Number.isInteger(lower.seq) ||
+          !Number.isFinite(upper.pitch) || !Number.isFinite(lower.pitch) ||
+          !Number.isFinite(upper.roll) || !Number.isFinite(lower.roll) ||
+          !Array.isArray(upper.accel) || !Array.isArray(lower.accel) ||
+          !Array.isArray(upper.gyro) || !Array.isArray(lower.gyro)) {
+        resetPlankReadout("Waiting for valid real six-axis samples and fused pitch/roll from both nodes.");
+        return;
+      }
+      const gatewayId = String(data.gateway?.clientId || "gateway");
+      const pairContext = [gatewayId, upper.sensor_uid, upper.mount_site, upper.body_part,
+                           lower.sensor_uid, lower.mount_site, lower.body_part].join("|");
+      const runtimeKey = `${plankPageSession}|${pairContext}`;
+      if (runtimeKey !== plankRuntimeKey) {
+        plankRuntimeKey = runtimeKey;
+        plankLastPairSeq = null;
+        plankLastPairSignature = "";
+        plankCalibrated = false;
+        plankCalibrating = false;
+        plankCalibrationFrames = [];
+        $("plankEvalStartBtn").disabled = true;
+        if (plankEvaluationRecording) finishPlankEvaluation();
+        $("plankCalibrateBtn").disabled = !plankMonitorActive;
+        resetPlankReadout(`Sensor pair: upper ${upper.mount_site}/${upper.body_part}, lower ${lower.mount_site}/${lower.body_part}. Expected chest/upper_back + lumbar/pelvis.`);
+      }
+      const signature = `${upper.seq}:${lower.seq}`;
+      if (signature === plankLastPairSignature) return;
+      if (plankLastPairSeq && (upper.seq === plankLastPairSeq.upper || lower.seq === plankLastPairSeq.lower)) return;
+      const frame = {
+        gateway_id: gatewayId,
+        mqtt_seq: Number(data.gateway?.mqttSeq),
+        received_time_s: performance.now() / 1000,
+        upper, lower
+      };
+      plankLastPairSeq = {upper: upper.seq, lower: lower.seq};
+      plankLastPairSignature = signature;
+
+      if (plankCalibrating) {
+        if ((performance.now() - plankCalibrationStartedAt) > 5000) {
+          plankCalibrating = false;
+          plankCalibrationFrames = [];
+          $("plankSensorStatus").textContent = "Calibration timed out before 2 seconds of paired samples arrived. Try again.";
+          $("plankCalibrateBtn").disabled = false;
+          return;
+        }
+        plankCalibrationFrames.push(frame);
+        $("plankSensorStatus").textContent = `Hold a correct plank still · baseline ${plankCalibrationFrames.length}/40 paired samples`;
+        if (plankCalibrationFrames.length >= 40) void sendPlankCalibration();
+        return;
+      }
+      if (plankCalibrated) void sendPlankPrediction(frame, runtimeKey);
+    }
+
+    $("plankMonitorBtn").addEventListener("click", () => {
+      plankMonitorActive = !plankMonitorActive;
+      $("plankMonitorBtn").textContent = plankMonitorActive ? "Stop plank monitor" : "Start plank monitor";
+      $("plankMonitorBtn").className = plankMonitorActive ? "btn danger" : "btn primary";
+      $("plankCalibrateBtn").disabled = !plankMonitorActive || !plankRuntimeKey;
+      $("plankEvalStartBtn").disabled = !plankMonitorActive || !plankCalibrated;
+      plankLastPairSeq = null;
+      plankLastPairSignature = "";
+      if (!plankMonitorActive) {
+        plankCalibrating = false;
+        plankCalibrationFrames = [];
+        if (plankEvaluationRecording) finishPlankEvaluation();
+        resetPlankReadout("Plank monitor stopped.");
+      } else {
+        resetPlankReadout("Waiting for paired IMU samples from MQTT.");
+      }
+    });
+
+    $("plankCalibrateBtn").addEventListener("click", () => {
+      if (!plankMonitorActive) return;
+      if (plankEvaluationRecording) finishPlankEvaluation();
+      plankCalibrated = false;
+      plankCalibrating = true;
+      plankCalibrationFrames = [];
+      plankCalibrationStartedAt = performance.now();
+      plankLastPairSeq = null;
+      plankLastPairSignature = "";
+      $("plankCalibrateBtn").disabled = true;
+      $("plankEvalStartBtn").disabled = true;
+      resetPlankReadout("Calibration started. Hold a correct plank still while 40 paired samples are collected.");
+      setTimeout(() => {
+        if (plankCalibrating && (performance.now() - plankCalibrationStartedAt) >= 5000) {
+          plankCalibrating = false;
+          plankCalibrationFrames = [];
+          $("plankSensorStatus").textContent = "Calibration timed out before enough paired samples arrived. Check both nodes and try again.";
+          $("plankCalibrateBtn").disabled = false;
+        }
+      }, 5100);
+    });
+
+    for (const id of ["plankUpperNode", "plankLowerNode"]) {
+      $(id).addEventListener("change", () => {
+        plankRuntimeKey = "";
+        plankLastPairSeq = null;
+        plankLastPairSignature = "";
+        plankCalibrated = false;
+        plankCalibrating = false;
+        plankCalibrationFrames = [];
+        $("plankCalibrateBtn").disabled = true;
+        $("plankEvalStartBtn").disabled = true;
+        if (plankEvaluationRecording) finishPlankEvaluation();
+        resetPlankReadout("Sensor pair changed. Calibrate the correct plank again.");
+      });
+    }
 
     // -------------------------------------------------------------
     // AI MODEL LIVE INFERENCE (Connecting to serve_model.py:8765)
     // -------------------------------------------------------------
     let aiPolling = false;
     let aiTimerId = null;
+    let aiGeneration = 0;
 
     $("aiToggleBtn").addEventListener("click", () => {
       aiPolling = !aiPolling;
+      aiGeneration++;
+      clearTimeout(aiTimerId);
       if (aiPolling) {
         $("aiToggleBtn").textContent = "⏸ หยุดตรวจจับ";
         $("aiToggleBtn").className = "btn danger";
@@ -923,16 +1526,46 @@
       }
     });
 
-    async function pollAiServer() {
+    async function pollAiServer(generation = aiGeneration) {
       if (!aiPolling) return;
       const host = $("aiHost").value.trim().replace(/\/$/, "");
       const site = recSiteSelect.value;
       const body = recBodyPartSelect.value;
 
       try {
-        const res = await fetch(`${host}/api/live?mount_site=${site}&body_part=${body}&ip=192.168.1.4`, { signal: AbortSignal.timeout(1500) });
+        if (!modelMetadata || modelMetadata.host !== host) {
+          const healthResponse = await fetch(`${host}/api/health`, { signal: AbortSignal.timeout(3000) });
+          const metadata = await healthResponse.json();
+          if (!aiPolling || generation !== aiGeneration) return;
+          if (!healthResponse.ok || !metadata.ready) throw new Error(metadata.reason || "Model not ready");
+          modelMetadata = {...metadata, host};
+          inferenceWindow.seconds = metadata.window_seconds;
+          inferenceWindow.gap = metadata.gap_reset_seconds;
+          $("aiModelContract").textContent = `${metadata.feature_version}: ${metadata.feature_columns.length} features; sites: ${metadata.mount_sites.join(", ")}; body: ${metadata.body_parts.join(", ")}; actions: ${metadata.action_labels.join(", ")}; phase model: ${metadata.phase_available ? "available" : "unavailable"}`;
+          $("aiServerBadge").textContent = "Model server ready; source: MQTT";
+          $("aiReasonText").textContent = `Model: ${metadata.feature_version} | ${metadata.feature_columns.length} features | sites: ${metadata.mount_sites.join(", ")}`;
+        }
+        if (!latestSample || Date.now() - lastSampleArrival > 1500 || !inferenceWindow.ready()) {
+          $("aiOutAction").textContent = "unknown";
+          $("aiOutStage").textContent = "unknown";
+          $("aiReasonText").textContent = "Waiting for a contiguous MQTT sensor window; check selected node/site and six axes";
+          return;
+        }
+        const sample = latestSample;
+        const key = `${sample.sensor_uid}|${sample.stream_epoch}|${sample.mount_site}|${sample.body_part}|${sample.side}|${sample.seq}`;
+        if (key === lastInferenceKey) return;
+        const rows = inferenceWindow.rows.slice();
+        const res = await fetch(`${host}/api/predict-window`, {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({rows, mount_site: sample.mount_site, body_part: sample.body_part,
+            stream_key: `${sample.sensor_uid}|${sample.mount_site}|${sample.body_part}|${sample.side}`,
+            device_time_s: sample.device_time_s, seq: sample.seq}),
+          signal: AbortSignal.timeout(3000)
+        });
+        lastInferenceKey = key;
         if (res.ok) {
           const data = await res.json();
+          if (!aiPolling || generation !== aiGeneration) return;
           $("aiServerBadge").className = "rec-badge";
           $("aiServerBadge").style.color = "var(--mint)";
           $("aiServerBadge").textContent = "● เซิร์ฟเวอร์ออนไลน์ (Online)";
@@ -953,81 +1586,279 @@
         $("aiServerBadge").className = "rec-badge";
         $("aiServerBadge").style.color = "var(--red)";
         $("aiServerBadge").textContent = "ออฟไลน์ (Offline - ตรวจสอบพอร์ต 8765)";
+      } finally {
+        if (aiPolling && generation === aiGeneration) aiTimerId = setTimeout(() => pollAiServer(generation), 200);
       }
-      aiTimerId = setTimeout(pollAiServer, 200);
     }
 
     // -------------------------------------------------------------
     // MQTT CONNECTION LOGIC
     // -------------------------------------------------------------
+    const mqttUrlParams = new URLSearchParams(location.search);
+    const requestedMqttPort = Number(mqttUrlParams.get("mqttPort") || 9001);
+    const MQTT_CONFIG = Object.freeze({
+      host: mqttUrlParams.get("broker") || location.hostname || "127.0.0.1",
+      port: Number.isInteger(requestedMqttPort) && requestedMqttPort > 0 && requestedMqttPort <= 65535
+        ? requestedMqttPort : 9001,
+      path: mqttUrlParams.get("mqttPath") || "/mqtt",
+      useSSL: mqttUrlParams.get("mqttTls") === "1",
+      topic: "planko/imu"
+    });
+    const MQTT_TRANSPORT = MQTT_CONFIG.useSSL ? "WSS" : "WS";
+    $("brokerHost").value = MQTT_CONFIG.host;
+    $("brokerHost").title = `${MQTT_CONFIG.host}:${MQTT_CONFIG.port} (${MQTT_TRANSPORT})`;
+    let mqttReconnectTimer = null;
+    let mqttGeneration = 0;
+    let mqttConnectAttempt = 0;
+    let mqttRetryCount = 0;
+    let mqttRxTotal = 0, mqttRxWindow = 0, mqttGaps = 0, mqttDuplicates = 0;
+    const mqttSequences = new Map();
+
+    function mqttConsole(eventName, details = {}) {
+      console.info(`[PlanKO MQTT] ${new Date().toISOString()} ${eventName}`, details);
+    }
+
+    function mqttErrorDetails(error) {
+      if (error == null) return { value: String(error) };
+      const details = {};
+      for (const key of ["errorCode", "errorMessage", "message", "name", "type"]) {
+        if (error[key] !== undefined) details[key] = error[key];
+      }
+      return Object.keys(details).length ? details : { value: String(error) };
+    }
+
+    let mqttWsProbeStarted = false;
+    function probeMqttWebSocketOnce() {
+      if (mqttWsProbeStarted || typeof WebSocket === "undefined") return;
+      mqttWsProbeStarted = true;
+      const scheme = MQTT_CONFIG.useSSL ? "wss" : "ws";
+      const url = `${scheme}://${MQTT_CONFIG.host}:${MQTT_CONFIG.port}${MQTT_CONFIG.path}`;
+      const startedAt = Date.now();
+      let probe;
+      let opened = false;
+      let closedByProbe = false;
+      mqttConsole("native WebSocket probe started", {
+        url,
+        subprotocol: "mqtt",
+        pageOrigin: location.origin
+      });
+      try {
+        probe = new WebSocket(url, ["mqtt"]);
+      } catch (error) {
+        mqttConsole("native WebSocket probe could not start", mqttErrorDetails(error));
+        return;
+      }
+      probe.onopen = () => {
+        opened = true;
+        mqttConsole("native WebSocket probe opened", {
+          elapsedMs: Date.now() - startedAt,
+          negotiatedProtocol: probe.protocol
+        });
+        window.setTimeout(() => {
+          if (probe.readyState === WebSocket.OPEN) {
+            closedByProbe = true;
+            probe.close(1000, "diagnostic probe complete");
+          }
+        }, 250);
+      };
+      probe.onerror = (event) => {
+        mqttConsole("native WebSocket probe error event", {
+          elapsedMs: Date.now() - startedAt,
+          eventType: event.type,
+          readyState: probe.readyState,
+          note: "Browsers hide the underlying TLS/network error details for WebSocket errors."
+        });
+      };
+      probe.onclose = (event) => {
+        mqttConsole("native WebSocket probe closed", {
+          elapsedMs: Date.now() - startedAt,
+          opened,
+          code: event.code,
+          reason: event.reason,
+          wasClean: event.wasClean,
+          closedByProbe
+        });
+      };
+    }
+
+    window.addEventListener("online", () => {
+      mqttConsole("browser online event", { navigatorOnline: navigator.onLine });
+    });
+    window.addEventListener("offline", () => {
+      mqttConsole("browser offline event", { navigatorOnline: navigator.onLine });
+    });
+
     function onMqttMessageArrived(msg) {
-      if (!isPaused && msg.destinationName === "planko/imu") {
+      if (msg.destinationName !== MQTT_CONFIG.topic || msg.retained) return;
+      try {
+        const data = JSON.parse(msg.payloadString);
+        if (!data || data.type !== "imu_stream" || !Array.isArray(data.nodes)) return;
+        const gateway = data.gateway || {};
+        if (!gateway.clientId) return;
+        if (!$("gatewayFilter").value.trim()) $("gatewayFilter").value = gateway.clientId;
+        const filter = $("gatewayFilter").value.trim();
+        if (gateway.clientId !== filter) return;
+        mqttRxTotal++;
+        mqttRxWindow++;
+        const seq = gateway.mqttSeq;
+        if (gateway.clientId && Number.isInteger(seq)) {
+          const previous = mqttSequences.get(gateway.clientId);
+          if (previous !== undefined) {
+            if (seq === previous) mqttDuplicates++;
+            else if (seq > previous + 1) mqttGaps += seq - previous - 1;
+          }
+          // Lower sequence starts a new observation segment (e.g. gateway reboot).
+          mqttSequences.set(gateway.clientId, seq);
+        }
+        if (mqttRxTotal === 1 || mqttRxTotal % 100 === 0) {
+          mqttConsole("message received", {
+            count: mqttRxTotal,
+            topic: msg.destinationName,
+            payloadBytes: new TextEncoder().encode(msg.payloadString || "").length,
+            nodeCount: data.nodes.length
+          });
+        }
+        // Pause freezes the visualization, while receive accounting continues.
         handleImuMessage(msg.payloadString);
+      } catch (error) {
+        console.warn("[PlanKO MQTT] Ignored malformed MQTT payload", error);
       }
     }
+
+    let mqttRateWindowStart = performance.now();
+    setInterval(() => {
+      const now = performance.now();
+      const hz = mqttRxWindow * 1000 / (now - mqttRateWindowStart);
+      $("mqttRxStats").textContent = `RX: ${mqttRxTotal} | ${hz.toFixed(1)} Hz | Gaps: ${mqttGaps} | Duplicates: ${mqttDuplicates}`;
+      mqttRxWindow = 0;
+      mqttRateWindowStart = now;
+    }, 1000);
+    $("gatewayFilter").addEventListener("change", () => {
+      mqttSequences.clear();
+      mqttRxTotal = mqttRxWindow = mqttGaps = mqttDuplicates = 0;
+      mqttRateWindowStart = performance.now();
+      captureNodes.clear();
+      $("recNodeList").textContent = "???????? IMU ??? Gateway ?????????";
+      refreshRecordPairOptions();
+    });
 
     function connectMqtt() {
-      const broker = "broker.emqx.io";
-      const port = 8084;
-      const clientId = "PlanKO_Web_" + Math.random().toString(16).substr(2, 8);
-
-      if (mqttClient) {
-        try { mqttClient.disconnect(); } catch (e) {}
+      clearTimeout(mqttReconnectTimer);
+      mqttReconnectTimer = null;
+      const generation = ++mqttGeneration;
+      const attempt = ++mqttConnectAttempt;
+      const attemptStartedAt = Date.now();
+      const previous = mqttClient;
+      mqttClient = null;
+      if (previous) {
+        previous.onConnectionLost = () => {};
+        try { previous.disconnect(); } catch (error) {}
       }
-
-      setMqttStatus("connecting", "กำลังเชื่อมต่อ broker.emqx.io:8084...");
-      mqttClient = new Paho.MQTT.Client(broker, port, "/mqtt", clientId);
-      mqttClient.onMessageArrived = onMqttMessageArrived;
-
-      const options = {
-        useSSL: true,
-        timeout: 6,
-        keepAliveInterval: 30,
-        cleanSession: true,
-        onSuccess: () => {
-          console.log("MQTT Connected! Subscribing to planko/imu...");
-          setMqttStatus("online", "เชื่อมต่อ broker.emqx.io สำเร็จ (WSS 8084)");
-          mqttClient.subscribe("planko/imu", { qos: 0 });
-          sourceLabel.textContent = "รับข้อมูลจาก Topic: planko/imu (20Hz)";
-        },
-        onFailure: (err) => {
-          console.error("MQTT Connect failed (SSL), trying non-SSL port 8083:", err);
-          fallbackToWs(clientId);
-        }
+      const retry = (message) => {
+        if (generation !== mqttGeneration) return;
+        mqttRetryCount++;
+        mqttConsole("retry scheduled", {
+          attempt,
+          retryCount: mqttRetryCount,
+          generation,
+          retryAfterMs: 4000,
+          reason: message,
+          navigatorOnline: navigator.onLine
+        });
+        setMqttStatus("offline", message + " ? retry in 4s");
+        clearTimeout(mqttReconnectTimer);
+        mqttReconnectTimer = setTimeout(connectMqtt, 4000);
       };
-
+      setMqttStatus("connecting", `Connecting ${MQTT_CONFIG.host}:${MQTT_CONFIG.port} (${MQTT_TRANSPORT})...`);
       try {
-        mqttClient.connect(options);
-      } catch (e) {
-        console.error("MQTT Init error:", e);
-        setMqttStatus("offline", "เชื่อมต่อไม่สำเร็จ");
+        const clientId = "PlanKO_Web_" + Date.now().toString(16) + Math.random().toString(16).slice(2, 10);
+        mqttConsole("connect attempt", {
+          attempt,
+          generation,
+          clientId,
+          host: MQTT_CONFIG.host,
+          port: MQTT_CONFIG.port,
+          path: MQTT_CONFIG.path,
+          transport: MQTT_TRANSPORT,
+          topic: MQTT_CONFIG.topic,
+          mqttVersion: 4,
+          timeoutSeconds: 10,
+          navigatorOnline: navigator.onLine,
+          pageProtocol: location.protocol,
+          pageOrigin: location.origin
+        });
+        const client = new Paho.MQTT.Client(MQTT_CONFIG.host, MQTT_CONFIG.port, MQTT_CONFIG.path, clientId);
+        mqttClient = client;
+        client.onMessageArrived = (msg) => {
+          if (generation === mqttGeneration) onMqttMessageArrived(msg);
+        };
+        client.onConnectionLost = (error) => {
+          mqttConsole("connection lost", {
+            attempt,
+            generation,
+            connected: client.isConnected(),
+            ...mqttErrorDetails(error)
+          });
+          retry("MQTT disconnected: " + (error.errorMessage || "connection lost"));
+        };
+        client.connect({
+          useSSL: MQTT_CONFIG.useSSL, timeout: 10, keepAliveInterval: 30,
+          cleanSession: true, mqttVersion: 4,
+          onSuccess: () => {
+            if (generation !== mqttGeneration) return;
+            mqttConsole("MQTT CONNECT accepted", {
+              attempt,
+              generation,
+              elapsedMs: Date.now() - attemptStartedAt,
+              connected: client.isConnected()
+            });
+            client.subscribe(MQTT_CONFIG.topic, {
+              qos: 0,
+              onSuccess: () => {
+                if (generation !== mqttGeneration) return;
+                mqttConsole("SUBSCRIBE accepted", {
+                  attempt,
+                  generation,
+                  topic: MQTT_CONFIG.topic,
+                  qos: 0
+                });
+                setMqttStatus("online", `Connected ${MQTT_CONFIG.host}:${MQTT_CONFIG.port} (${MQTT_TRANSPORT})`);
+                sourceLabel.textContent = `Topic: ${MQTT_CONFIG.topic} | target 20 Hz`;
+              },
+              onFailure: (error) => {
+                mqttConsole("SUBSCRIBE rejected", {
+                  attempt,
+                  generation,
+                  topic: MQTT_CONFIG.topic,
+                  ...mqttErrorDetails(error)
+                });
+                retry("Subscribe failed: " + (error.errorMessage || "unknown error"));
+              }
+            });
+          },
+          onFailure: (error) => {
+            mqttConsole("MQTT CONNECT failed", {
+              attempt,
+              generation,
+              elapsedMs: Date.now() - attemptStartedAt,
+              ...mqttErrorDetails(error)
+            });
+            probeMqttWebSocketOnce();
+            retry("MQTT connect failed: " + (error.errorMessage || "unknown error"));
+          }
+        });
+      } catch (error) {
+        mqttConsole("MQTT initialization failed", {
+          attempt,
+          generation,
+          ...mqttErrorDetails(error)
+        });
+        retry("MQTT initialization failed: " + error.message);
       }
-    }
-
-    function fallbackToWs(clientId) {
-      setMqttStatus("connecting", "ลองเชื่อมต่อผ่านพอร์ต 8083 (WS)...");
-      if (mqttClient) {
-        try { mqttClient.disconnect(); } catch (e) {}
-      }
-      mqttClient = new Paho.MQTT.Client("broker.emqx.io", 8083, "/mqtt", clientId);
-      mqttClient.onMessageArrived = onMqttMessageArrived;
-      mqttClient.connect({
-        useSSL: false,
-        timeout: 6,
-        cleanSession: true,
-        onSuccess: () => {
-          setMqttStatus("online", "เชื่อมต่อ broker.emqx.io:8083 (WS) สำเร็จ");
-          mqttClient.subscribe("planko/imu", { qos: 0 });
-          sourceLabel.textContent = "รับข้อมูลจาก Topic: planko/imu (20Hz)";
-        },
-        onFailure: () => {
-          setMqttStatus("offline", "เชื่อมต่อไม่สำเร็จ (ลองใหม่ใน 4 วิ)");
-          setTimeout(connectMqtt, 4000);
-        }
-      });
     }
 
     function setMqttStatus(state, text) {
+      mqttConsole("status", { state, text });
       mqttDot.className = "status-dot " + (state === "online" ? "online" : state === "offline" ? "offline" : "");
       mqttStatusText.textContent = text;
     }
@@ -1038,16 +1869,7 @@
         const data = JSON.parse(jsonStr);
         if (data.type !== "imu_stream") return;
 
-        // Calculate rate (Hz)
-        packetCount++;
         const now = Date.now();
-        if (now - lastFpsCalcTime >= 1000) {
-          currentFps = (packetCount * 1000) / (now - lastFpsCalcTime);
-          fpsText.textContent = currentFps.toFixed(1) + " Hz";
-          packetCount = 0;
-          lastFpsCalcTime = now;
-        }
-
         // Gateway uptime
         if (data.gateway && data.gateway.uptimeMs) {
           const sec = Math.floor(data.gateway.uptimeMs / 1000);
@@ -1070,7 +1892,18 @@
 
         // Process Nodes
         if (Array.isArray(data.nodes)) {
-          const node = data.nodes.find(n => n.nodeId === selectedNodeId) || data.nodes[0];
+          updateCaptureNodes(data);
+          if (isRecording) {
+            const selectedData = {...data, nodes: data.nodes.filter(node => recordingNodeIds.has(Number(node.nodeId)))};
+            datasetRecorder.ingest(selectedData, () => sharedActionLabel.value, {
+              phase: currentPhase,
+              source: guidedTimerCheck.checked ? "guided_timer_cue" : "manual_live",
+              reviewed: !guidedTimerCheck.checked && $("recPhaseReviewed").checked
+            }, now);
+          }
+          updatePlankNodeOptions(data.nodes);
+          processPlankMessage(data);
+          const node = data.nodes.find(n => n.nodeId === selectedNodeId);
           if (node) {
             targetRoll = (node.roll || 0) - tareRoll;
             targetPitch = (node.pitch || 0) - tarePitch;
@@ -1088,63 +1921,36 @@
               azValue.textContent = az.toFixed(2);
             }
 
-            let gx = 0, gy = 0, gz = 0;
-            if (node.gyro && Array.isArray(node.gyro) && node.gyro.length >= 3) {
-              gx = node.gyro[0]; gy = node.gyro[1]; gz = node.gyro[2];
-            }
-
-            seqText.textContent = node.seq || "—";
+            seqText.textContent = node.seq ?? "—";
             sensorPill.textContent = node.isMock ? `Node #${node.nodeId} (Mock)` : `Node #${node.nodeId} (Real IMU)`;
 
-            // Accumulate Dataset Sample if recording
-            if (isRecording) {
-              const curSeq = Number(node.seq || 0);
-              const curTs = Number(node.ts || 0);
-
-              // Filter out duplicate packets from MQTT/reconnect
-              if (lastRecordedSeq !== null && curSeq === lastRecordedSeq && curTs === lastRecordedTs) {
-                return;
-              }
-              lastRecordedSeq = curSeq;
-              lastRecordedTs = curTs;
-
-              const sample = {
-                sensor_uid: `node_${node.nodeId}`,
-                mount_site: recSiteSelect.value,
-                body_part: recBodyPartSelect.value,
-                side: $("recSideSelect").value,
-                subject_id: $("recSubjectId").value.trim() || "P01",
-                session_id: $("recSessionId").value.trim() || "S01",
-                trial_id: $("recTrialId").value.trim() || "trial-01",
-                action_label: recActionSelect.value,
-                phase_label: currentPhase,
-                phase_annotation_reviewed: true,
-                host_time_iso: new Date().toISOString(),
-                host_time_s: (now / 1000).toFixed(4),
-                boot_ms: node.ts || 0,
-                seq: node.seq || 0,
-                accel_x: ax,
-                accel_y: ay,
-                accel_z: az,
-                gyro_x: gx,
-                gyro_y: gy,
-                gyro_z: gz,
-                roll_deg: (node.roll || 0).toFixed(2),
-                pitch_deg: (node.pitch || 0).toFixed(2),
-                yaw_deg: (node.yaw || 0).toFixed(2),
-                calibrated: !node.isMock,
-                valid: true,
-                firmware_status: "online"
-              };
-              recordedSamples.push(sample);
-              const elapsedSec = ((now - recordStartTime) / 1000).toFixed(1);
-              sampleCounterText.textContent = `${recordedSamples.length.toLocaleString()} ตัวอย่าง (${elapsedSec}s)`;
+            let row;
+            try {
+              row = PlanKOImu.sampleFromMessage(data, node, {
+                mount_site: recSiteSelect.value, body_part: recBodyPartSelect.value,
+                side: $("recSideSelect").value
+              });
+              $("sampleContractStatus").textContent = "Six axes ready: m/s^2 + rad/s";
+            } catch (error) {
+              inferenceWindow.reset(); latestSample = null;
+              $("sampleContractStatus").textContent = error.message;
+              return;
             }
+            if (!inferenceWindow.add(row)) return;
+            latestSample = row;
+            lastSampleArrival = Date.now();
+
           }
         }
       } catch (err) {
         console.warn("JSON parse error:", err);
       }
+    }
+
+    for (const id of ["nodeSelect", "recSiteSelect", "recBodyPartSelect", "recSideSelect", "gatewayFilter"]) {
+      $(id).addEventListener("change", () => {
+        inferenceWindow.reset(); latestSample = null; lastInferenceKey = "";
+      });
     }
 
     // --- Event Listeners ---
@@ -1198,7 +2004,14 @@
       return [cx + isoX * scale, cy + isoY * scale];
     }
 
+    let renderCount = 0, renderWindowStart = performance.now();
     function drawScene() {
+      renderCount++;
+      const renderNow = performance.now();
+      if (renderNow - renderWindowStart >= 1000) {
+        fpsText.textContent = (renderCount * 1000 / (renderNow - renderWindowStart)).toFixed(1) + " FPS";
+        renderCount = 0; renderWindowStart = renderNow;
+      }
       if (!isPaused) {
         currentRoll  += (targetRoll  - currentRoll)  * 0.25;
         currentPitch += (targetPitch - currentPitch) * 0.25;

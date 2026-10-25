@@ -80,6 +80,7 @@ struct NodeTelemetry {
     bool     finger;
     uint32_t rawRed;
     uint32_t rawIr;
+    uint32_t lastRawReceivedMillis;
     volatile unsigned long lastReceivedMillis; // volatile: written by BLE callback task, read by main loop
 };
 

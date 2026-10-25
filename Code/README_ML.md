@@ -49,15 +49,11 @@ pip install -r requirements-ml.txt
 ### ช่องทางที่ 1: บันทึกผ่านหน้าเว็บมอนิเตอร์ (สะดวกที่สุด)
 1. เปิดไฟล์ `WEB/index.html` ในเบราว์เซอร์
 2. เลื่อนลงมาที่แท็บ **"📂 บันทึกชุดข้อมูล Dataset (CSV Recorder)"**
-3. เลือก:
-   * **ตำแหน่งติดเซนเซอร์ (Mount Site)**: เช่น `neck` (ลำคอ), `lumbar` (หลังส่วนล่าง), `wrist` (ข้อมือ)
-   * **ส่วนของร่างกาย (Body Part)**: เช่น ลำคอ, หลัง/เอว, ข้อมือ
-   * **ท่าทาง (Action Label)**: เช่น `neck_flexion` (ก้มคอ), `neck_extension` (เงยคอ), `wrist_up`
+3. เลือก Node หลังบนและหลังล่าง แล้วเลือก **Case/Action Label กลาง** เช่น `case_flexion` เพียงครั้งเดียว
+   * ทุก Node ที่เลือกจะได้ `action_label` เดียวกัน; ไม่เปลี่ยน label ตามตำแหน่งหรือ Node
    * กรอก `Subject ID`, `Session ID`, `Trial ID`
-4. ติ๊กเปิด **"ใช้ตัวช่วยนำจังหวะอัตโนมัติ (Guided Phase Timer)"**
-5. กดปุ่ม **🔴 เริ่มบันทึก (Start Recording)**
-   * ระบบจะมีเสียง Beep นำจังหวะ: `neutral (3s)` → `approaching (3s)` → `holding (5s)` → `returning (3s)` → `neutral (2s)`
-   * เมื่อเสร็จสิ้น เบราว์เซอร์จะ **ดาวน์โหลดไฟล์ CSV มาตรฐาน** ให้โดยอัตโนมัติทันที
+4. กด **เริ่มบันทึก 2 Node พร้อมกัน**; เมื่อกดหยุด ระบบสร้าง CSV แยก sensor และ manifest
+5. Guided Phase Timer เป็นตัวเลือกเสริมและปิดไว้ตามค่าเริ่มต้น; ถ้าเปิด ระบบจะกำหนด phase cue ให้ทั้งสอง Node พร้อมกัน
 
 ### ช่องทางที่ 2: บันทึกผ่านหน้าเว็บ Gateway ESP32 (Wi-Fi)
 * เชื่อมต่อ Wi-Fi หรือเข้าผ่าน IP ของ Gateway เช่น `http://192.168.1.4/`
@@ -122,3 +118,29 @@ python tools/serve_model.py --model models/pose_model/model_bundle.joblib --port
 เมื่อเซิร์ฟเวอร์รันบนพอร์ต 8765:
 * เปิด `WEB/index.html` แล้วคลิกแท็บ **"🧠 ทดสอบโมเดล AI (Live Model Inference)"** แล้วกดปุ่ม **"▶ เริ่มตรวจจับสด"**
 * หรือเปิด `model_test.html` ในเบราว์เซอร์เพื่อดูรายละเอียดกราฟและ Timeline การทำนายท่าทางแบบ Real-time
+
+## 7. Experimental plank phase pilot (six-axis IMUs)
+
+`tools/plank_phase.py` and `config/plank_model.json` add a separate rule-based phase pilot. It does not replace the existing wrist action classifier and it is not a trained posture model.
+
+The pilot needs two live real IMUs in the same MQTT frame: an upper-trunk sensor at `chest` or `upper_back`, and a lower-trunk sensor at `lumbar` or `pelvis`. Configure those mount sites on the Gateway `/nodes` page first. The defaults (`neck` and `lumbar`) do not form a valid plank pair. It uses each MPU-6050's fused pitch and roll from accelerometer + gyroscope. It ignores yaw because this IMU has no magnetometer.
+
+In **AI Live Model Inference**, start **Plank Phase Pilot**, select the two nodes, then hold a correct plank and press **Calibrate correct plank (2 s)**. Calibration records 40 paired MQTT samples and stores both per-node and relative pitch/roll baselines in memory until the local server restarts or the selected sensor pair changes. The monitor reports a paired phase and independent upper/lower Node phases, each with normalized angular deviation `E` and trend `V`. The states are `normal`, `phase1_approaching_error`, `phase2_incorrect_posture`, and `phase3_recovery_trend`; their boundaries use the proposed 0.6 / 0.7 / 1.0 hysteresis bands and persistence times in `plank_model.json`.
+
+The initial 12-degree score scales in that file are placeholders marked `validated: false`; tune them against labeled PlanKO recordings before relying on the output. These phases are experimental additions and are not outputs from the 2022 paper. The current serialized model is a wrist-only prototype with no trained phase model, so the pilot reports rule-based status and never presents an ML confidence score.
+
+The two-sensor pilot reports only a generic sagittal or roll-angle deviation. It cannot reliably name hip-high versus excessive-arch until sensor-axis direction and labeled thresholds are validated. Load-distribution classification is unavailable because the Gateway currently publishes one pressure channel rather than separate arm and foot force measurements. Lateral-balance classification needs bilateral IMUs and labeled trials. Calibration and phase state are held in server memory.
+
+## 8. How to report accuracy as a percentage
+
+`E` is a normalized deviation score and `V` is a trend. Neither is model accuracy or confidence. Accuracy is computed only after comparing predictions with human-reviewed ground-truth labels.
+
+For a first PlanKO evaluation, record complete trials for all four phase labels and include a ground-truth label for the paired phase and for each Node if per-Node accuracy is required. Update the three reference-label selectors during capture and review labels against video. Keep every row from a trial together. For a personalized model, calibrate and tune thresholds on earlier sessions, then test on separate later trials. For performance across people, use subject-grouped cross-validation or leave-one-subject-out; never randomly split individual 20 Hz samples or overlapping windows, since that leaks nearly identical sensor data across train and test.
+
+Report accuracy percent (`correct predictions / all predictions × 100`) together with balanced accuracy, macro-F1, per-phase precision/recall, and a confusion matrix. Unknown predictions count as incorrect; coverage is shown separately. The capture CSV records ground truth and prediction separately for the pair, upper Node, and lower Node. Run the evaluator only on held-out trial files, for example:
+
+```powershell
+python tools/evaluate_plank_predictions.py data\P02_S02_trial-03_plank_phase_predictions.csv data\P03_S01_trial-02_plank_phase_predictions.csv --output reports\plank_accuracy.json
+```
+
+Use the validation split to select thresholds; report the final percentage once on a held-out test set that was not used for tuning. For streaming use, report phase-transition delay and dropped-sample rate separately from classification accuracy. The existing `train_model.py` already reports grouped-fold Accuracy and macro-F1 for labeled single-sensor classifiers, but its current wrist recordings cannot produce a valid Plank Phase or per-Node accuracy report.
