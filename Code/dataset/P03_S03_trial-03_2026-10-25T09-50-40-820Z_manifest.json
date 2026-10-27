@@ -1,0 +1,54 @@
+{
+  "schema": "planko-multinode-capture-v1",
+  "transport": "MQTT",
+  "broker": "wss://test.mosquitto.org:8081/mqtt",
+  "topic": "planko/imu",
+  "gateway_id": "PlanKO_GW_5C6E27AC",
+  "subject_id": "P03",
+  "session_id": "S03",
+  "trial_id": "trial-03",
+  "action_label": "case_flexion",
+  "started_at": "2026-10-25T09:50:40.820Z",
+  "stopped_at": "2026-10-25T09:50:57.253Z",
+  "target_sampling_hz": 20,
+  "units": {
+    "accel": "m/s^2",
+    "gyro": "rad/s",
+    "orientation": "degrees"
+  },
+  "note": "Samples are forwarded in per-node batches. MQTT QoS 0 cannot confirm delivery across broker disconnects; observed sequence gaps are reported. Device clocks are independent across nodes.",
+  "streams": [
+    {
+      "node_id": 1,
+      "sensor_uid": "ac276e5c3112",
+      "mount_site": "neck",
+      "body_part": "neck",
+      "side": "unknown",
+      "samples": 327,
+      "duplicates_excluded": 0,
+      "invalid_excluded": 0,
+      "out_of_order_excluded": 0,
+      "observed_missing_samples": 0,
+      "discontinuities": 0,
+      "unlabeled_samples": 0,
+      "phase_reviewed_samples": 0,
+      "file": "P03_S03_trial-03_2026-10-25T09-50-40-820Z_node1_ac276e5c3112_neck_1.csv"
+    },
+    {
+      "node_id": 2,
+      "sensor_uid": "ac276e5c2d6a",
+      "mount_site": "lumbar",
+      "body_part": "lumbar",
+      "side": "unknown",
+      "samples": 24,
+      "duplicates_excluded": 0,
+      "invalid_excluded": 0,
+      "out_of_order_excluded": 0,
+      "observed_missing_samples": 296,
+      "discontinuities": 23,
+      "unlabeled_samples": 0,
+      "phase_reviewed_samples": 0,
+      "file": "P03_S03_trial-03_2026-10-25T09-50-40-820Z_node2_ac276e5c2d6a_lumbar_2.csv"
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 /**
  * ==============================================================================
  * Project: PlanKO - Smart Plank Training System
- * Hardware: ESP32-C3 (DevKitM-1 / SuperMini)
+ * Hardware: ESP32-C3 gateway / classic ESP32 RFP605 gateway sandbox
  *
  * Supports 2 Unified Roles via PlatformIO build flags:
  *   1. ROLE_GATEWAY:
@@ -15,7 +15,7 @@
  *      - BLE Peripheral (Advertises as PlanKO_IMU_1 .. PlanKO_IMU_4)
  *      - Reads MPU-6050 6-DOF IMU over I2C (SDA=8, SCL=9)
  *      - Computes Pitch, Roll, Yaw via Complementary Filter
- *      - Transmits telemetry and raw IMU packets via BLE Notifications
+ *      - Transmits telemetry and raw IMU data in one BLE packet per sample
  * ==============================================================================
  */
 
@@ -37,7 +37,11 @@
 #define NODE_ID 1
 #endif
 
-#if (NODE_ID == 1)
+#ifndef ENABLE_NODE1_MAX30102
+#define ENABLE_NODE1_MAX30102 1
+#endif
+
+#if (NODE_ID == 1) && ENABLE_NODE1_MAX30102
 #include <MAX30105.h>
 #include <heartRate.h>
 MAX30105 max30102;
@@ -74,6 +78,7 @@ Mpu6050Reader imu;
 NimBLEServer *pServer = nullptr;
 NimBLECharacteristic *pImuCharacteristic = nullptr;
 bool bleConnected = false;
+uint16_t bleConnectionHandle = 0xFFFF;
 uint16_t packetSequence = 0;
 unsigned long lastSampleTime = 0;
 unsigned long lastSerialPrintTime = 0;
@@ -101,15 +106,18 @@ class ServerCallbacks : public NimBLEServerCallbacks {
   }
   void onConnect(NimBLEServer *pServer, ble_gap_conn_desc *desc) override {
     bleConnected = true;
+    bleConnectionHandle = desc->conn_handle;
     NODE_LOGF("🔗 [BLE] Gateway Connected! conn=%u\n", desc->conn_handle);
   }
   void onDisconnect(NimBLEServer *pServer) override {
     bleConnected = false;
+    bleConnectionHandle = 0xFFFF;
     NODE_LOGLN("🔌 [BLE] Gateway Disconnected! Restarting Adv...");
     NimBLEDevice::startAdvertising();
   }
   void onDisconnect(NimBLEServer *pServer, ble_gap_conn_desc *desc) override {
     bleConnected = false;
+    bleConnectionHandle = 0xFFFF;
     NODE_LOGF("🔌 [BLE] Gateway Disconnected! conn=%u. Restarting Adv...\n",
               desc->conn_handle);
     NimBLEDevice::startAdvertising();
@@ -150,7 +158,7 @@ void setup() {
     NODE_LOGLN("❌ [IMU] MPU-6050 not detected. Retrying in background...");
   }
 
-#if (NODE_ID == 1)
+#if (NODE_ID == 1) && ENABLE_NODE1_MAX30102
   // 1.1 Initialize MAX30102 Pulse Oximeter on I2C bus (SDA=8, SCL=9)
   max30102Detected = initMax30102();
 #endif
@@ -160,6 +168,9 @@ void setup() {
   snprintf(bleName, sizeof(bleName), "PlanKO_IMU_%d", NODE_ID);
   NimBLEDevice::init(bleName);
   NimBLEDevice::setPower(ESP_PWR_LVL_P9); // Maximum TX power
+  const int mtuResult = NimBLEDevice::setMTU(64);
+  NODE_LOGF("📦 [BLE] Preferred ATT MTU 64: %s\n",
+            mtuResult == 0 ? "ready" : "failed");
 
   pServer = NimBLEDevice::createServer();
   pServer->setCallbacks(new ServerCallbacks());
@@ -232,36 +243,63 @@ void loop() {
       const uint16_t sequence = ++packetSequence;
       const uint32_t sampleTime = millis();
 
-      ImuPacket pkt;
-      pkt.nodeId = NODE_ID;
-      pkt.sequence = sequence;
-      pkt.timestamp = sampleTime;
-      pkt.pitch = (int16_t)(imu.pitch * 100.0f);
-      pkt.roll = (int16_t)(imu.roll * 100.0f);
-      pkt.yaw = (int16_t)(imu.yaw * 100.0f);
-      pkt.ax = (int16_t)(imu.ax * 100.0f);
-      pkt.ay = (int16_t)(imu.ay * 100.0f);
-      pkt.az = (int16_t)(imu.az * 100.0f);
-      pkt.status = imu.isCalibrated ? 1 : 0;
+      const uint16_t peerMtu =
+          (pServer != nullptr && bleConnectionHandle != 0xFFFF)
+              ? pServer->getPeerMTU(bleConnectionHandle)
+              : 0;
+      if (peerMtu >= sizeof(CombinedImuPacket) + 3) {
+        CombinedImuPacket pkt = {};
+        pkt.nodeId = NODE_ID;
+        pkt.sequence = sequence;
+        pkt.timestamp = sampleTime;
+        pkt.pitch = (int16_t)(imu.pitch * 100.0f);
+        pkt.roll = (int16_t)(imu.roll * 100.0f);
+        pkt.yaw = (int16_t)(imu.yaw * 100.0f);
+        pkt.ax = (int16_t)(imu.ax * 100.0f);
+        pkt.ay = (int16_t)(imu.ay * 100.0f);
+        pkt.az = (int16_t)(imu.az * 100.0f);
+        pkt.rawAx = imu.rawAx;
+        pkt.rawAy = imu.rawAy;
+        pkt.rawAz = imu.rawAz;
+        pkt.rawGx = imu.rawGx;
+        pkt.rawGy = imu.rawGy;
+        pkt.rawGz = imu.rawGz;
+        pkt.status = imu.isCalibrated ? 1 : 0;
+        pkt.marker = COMBINED_IMU_PACKET_MARKER;
+        pImuCharacteristic->notify((uint8_t *)&pkt, sizeof(pkt));
+      } else {
+        // Retain compatibility with older gateways that negotiate only MTU 23.
+        ImuPacket telemetryPkt = {};
+        telemetryPkt.nodeId = NODE_ID;
+        telemetryPkt.sequence = sequence;
+        telemetryPkt.timestamp = sampleTime;
+        telemetryPkt.pitch = (int16_t)(imu.pitch * 100.0f);
+        telemetryPkt.roll = (int16_t)(imu.roll * 100.0f);
+        telemetryPkt.yaw = (int16_t)(imu.yaw * 100.0f);
+        telemetryPkt.ax = (int16_t)(imu.ax * 100.0f);
+        telemetryPkt.ay = (int16_t)(imu.ay * 100.0f);
+        telemetryPkt.az = (int16_t)(imu.az * 100.0f);
+        telemetryPkt.status = imu.isCalibrated ? 1 : 0;
+        pImuCharacteristic->notify((uint8_t *)&telemetryPkt,
+                                   sizeof(telemetryPkt));
 
-      pImuCharacteristic->notify((uint8_t *)&pkt, sizeof(pkt));
-
-      RawImuPacket rawPkt;
-      rawPkt.nodeId = NODE_ID;
-      rawPkt.sequence = sequence;
-      rawPkt.timestamp = sampleTime;
-      rawPkt.ax = imu.rawAx;
-      rawPkt.ay = imu.rawAy;
-      rawPkt.az = imu.rawAz;
-      rawPkt.gx = imu.rawGx;
-      rawPkt.gy = imu.rawGy;
-      rawPkt.gz = imu.rawGz;
-      rawPkt.marker = RAW_IMU_PACKET_MARKER | (imu.isCalibrated ? 1 : 0);
-      pImuCharacteristic->notify((uint8_t *)&rawPkt, sizeof(rawPkt));
+        RawImuPacket rawPkt = {};
+        rawPkt.nodeId = NODE_ID;
+        rawPkt.sequence = sequence;
+        rawPkt.timestamp = sampleTime;
+        rawPkt.ax = imu.rawAx;
+        rawPkt.ay = imu.rawAy;
+        rawPkt.az = imu.rawAz;
+        rawPkt.gx = imu.rawGx;
+        rawPkt.gy = imu.rawGy;
+        rawPkt.gz = imu.rawGz;
+        rawPkt.marker = RAW_IMU_PACKET_MARKER | (imu.isCalibrated ? 1 : 0);
+        pImuCharacteristic->notify((uint8_t *)&rawPkt, sizeof(rawPkt));
+      }
     }
   }
 
-#if (NODE_ID == 1)
+#if (NODE_ID == 1) && ENABLE_NODE1_MAX30102
   // Background retry if MAX30102 was not ready at boot
   static unsigned long lastMaxRetryTime = 0;
   if (!max30102Detected && (now - lastMaxRetryTime >= 2000)) {
@@ -378,7 +416,7 @@ void loop() {
                       "sensor | BLE: %s\n",
                       NODE_ID, bleConnected ? "CONNECTED" : "ADVERTISING");
       }
-#if (NODE_ID == 1)
+#if (NODE_ID == 1) && ENABLE_NODE1_MAX30102
       if (max30102Detected) {
         Serial.printf("❤️ [Node #%d][MAX30102] IR: %u | Red: %u | BPM: %5.1f | "
                       "SpO2: %3u%% | Finger: %s\n",
@@ -411,6 +449,9 @@ void loop() {
 #include <atomic>
 #include <freertos/FreeRTOS.h>
 #include <freertos/portmacro.h>
+#if defined(RFP605_GATEWAY_INTEGRATION)
+#include "rfp605_sensor.h"
+#endif
 
 // Wi-Fi Configuration
 const char *WIFI_SSID = "MMm";
@@ -467,10 +508,20 @@ struct PadConfig {
   int8_t pin;
 };
 
+#if defined(RFP605_GATEWAY_INTEGRATION)
+// The ESP32-DevKit RFP605 target does not use the C3 GPIO pad map. In
+// particular, GPIOs 6, 7 and 10 are connected to flash on classic ESP32.
+const PadConfig PAD_CONFIGS[] = {
+    {"L1", -1}, {"L2", -1}, {"L3", -1}, {"L4", -1},
+    {"L5", -1}, {"L6", -1}, {"L7", -1}, {"L8", -1},
+    {"R1", -1}, {"R2", -1}, {"R3", -1}, {"R4", -1},
+    {"R5", -1}, {"R6", -1}, {"R7", -1}, {"R8", -1}};
+#else
 const PadConfig PAD_CONFIGS[] = {
     {"L1", -1}, {"L2", 1},  {"L3", 2},  {"L4", 3},  {"L5", 4},  {"L6", 5},
     {"L7", 6},  {"L8", 7},  {"R1", 10}, {"R2", -1}, {"R3", -1}, {"R4", -1},
     {"R5", -1}, {"R6", -1}, {"R7", -1}, {"R8", -1}};
+#endif
 
 const size_t TOTAL_PADS = sizeof(PAD_CONFIGS) / sizeof(PAD_CONFIGS[0]);
 
@@ -659,6 +710,103 @@ void notifyCallback(NimBLERemoteCharacteristic *pRemoteChar, uint8_t *pData,
     return;
   }
 
+  // New nodes send telemetry and raw IMU axes together in one 33-byte
+  // notification. The link negotiates ATT MTU 64 before enabling this format.
+  if (length == sizeof(CombinedImuPacket) &&
+      pData[sizeof(CombinedImuPacket) - 1] == COMBINED_IMU_PACKET_MARKER) {
+    const CombinedImuPacket *pkt =
+        reinterpret_cast<const CombinedImuPacket *>(pData);
+    if (pkt->nodeId < 1 || pkt->nodeId > MAX_NODES)
+      return;
+
+    const int idx = pkt->nodeId - 1;
+    NodeTelemetry &telemetry = nodesTelemetry[idx];
+    const unsigned long receivedAt = millis();
+    const bool sequenceWrapped =
+        telemetry.lastSequence > 60000 && pkt->sequence < 100;
+    if (sequenceWrapped) {
+      portENTER_CRITICAL(&datasetMux);
+      datasetHistory[idx].nextIndex = 0;
+      datasetHistory[idx].count = 0;
+      datasetHistory[idx].bootId = esp_random();
+      if (datasetHistory[idx].bootId == 0)
+        datasetHistory[idx].bootId = 1;
+      portEXIT_CRITICAL(&datasetMux);
+      telemetry.lastSequence = 0;
+    }
+
+    if (telemetry.lastSequence == 0) {
+      Serial.printf("🎉 [GW-RECV] First combined packet from Node #%d! Seq: %u\n",
+                    pkt->nodeId, static_cast<unsigned>(pkt->sequence));
+    } else {
+      const uint16_t sequenceDelta =
+          static_cast<uint16_t>(pkt->sequence - telemetry.lastSequence);
+      if (sequenceDelta > 1 && sequenceDelta < 0x8000) {
+        const uint16_t dropped = sequenceDelta - 1;
+        telemetry.totalDropped += dropped;
+        static unsigned long lastGapLogTime[MAX_NODES] = {0, 0, 0, 0};
+        if (receivedAt - lastGapLogTime[idx] >= 1000) {
+          lastGapLogTime[idx] = receivedAt;
+          Serial.printf(
+              "⚠️ [GATEWAY-BLE] Node #%d missed %u combined samples; total=%u\n",
+              pkt->nodeId, static_cast<unsigned>(dropped),
+              static_cast<unsigned>(telemetry.totalDropped));
+        }
+      }
+    }
+
+    telemetry.lastSequence = pkt->sequence;
+    telemetry.lastTimestamp = pkt->timestamp;
+    telemetry.pitch = pkt->pitch / 100.0f;
+    telemetry.roll = pkt->roll / 100.0f;
+    telemetry.yaw = pkt->yaw / 100.0f;
+    telemetry.ax = pkt->ax / 100.0f;
+    telemetry.ay = pkt->ay / 100.0f;
+    telemetry.az = pkt->az / 100.0f;
+    telemetry.gx = (pkt->rawGx / 65.5f) * 0.01745329252f;
+    telemetry.gy = (pkt->rawGy / 65.5f) * 0.01745329252f;
+    telemetry.gz = (pkt->rawGz / 65.5f) * 0.01745329252f;
+    telemetry.status = pkt->status;
+    telemetry.lastReceivedMillis = receivedAt;
+    telemetry.lastRawReceivedMillis = receivedAt;
+
+    DatasetSample sample = {};
+    sample.timestamp = pkt->timestamp;
+    sample.sequence = pkt->sequence;
+    sample.rawAx = pkt->rawAx;
+    sample.rawAy = pkt->rawAy;
+    sample.rawAz = pkt->rawAz;
+    sample.rawGx = pkt->rawGx;
+    sample.rawGy = pkt->rawGy;
+    sample.rawGz = pkt->rawGz;
+    sample.pitch = pkt->pitch;
+    sample.roll = pkt->roll;
+    sample.yaw = pkt->yaw;
+    sample.ax = pkt->ax;
+    sample.ay = pkt->ay;
+    sample.az = pkt->az;
+    sample.status = pkt->status;
+    sample.telemetryValid = true;
+    portENTER_CRITICAL(&datasetMux);
+    NodeDatasetHistory &history = datasetHistory[idx];
+    history.samples[history.nextIndex] = sample;
+    history.nextIndex = (history.nextIndex + 1) % DATASET_HISTORY_CAPACITY;
+    if (history.count < DATASET_HISTORY_CAPACITY)
+      ++history.count;
+    portEXIT_CRITICAL(&datasetMux);
+
+    static unsigned long lastCombinedLogTime[MAX_NODES] = {0, 0, 0, 0};
+    if (receivedAt - lastCombinedLogTime[idx] >= 1000) {
+      lastCombinedLogTime[idx] = receivedAt;
+      Serial.printf("📥 [GW-RECV] Node #%d [COMBINED] | Seq: %5u | "
+                    "P: %5.1f R: %5.1f Y: %5.1f | Drops: %u\n",
+                    pkt->nodeId, static_cast<unsigned>(pkt->sequence), telemetry.pitch,
+                    telemetry.roll, telemetry.yaw,
+                    static_cast<unsigned>(telemetry.totalDropped));
+    }
+    return;
+  }
+
   // Raw six-axis notification used only by the local Dataset recorder.
   if (length == sizeof(RawImuPacket) &&
       (pData[sizeof(RawImuPacket) - 1] & RAW_IMU_PACKET_MARKER_MASK) ==
@@ -827,7 +975,7 @@ void resumeBleScanIfNeeded(bool forceRestart) {
     // 1. Scanner is not currently running
     // 2. forceRestart requested (e.g. immediately on disconnect)
     // 3. Expected connected count changed (adjust 75%/20% scan duty cycle)
-    // 4. Scanner has been running for >= 3000ms (re-arms ESP32-C3 controller
+    // 4. Scanner has been running for >= 3000ms (re-arms ESP32 controller
     // GAP state to prevent stalls)
     bool shouldRestart = forceRestart || !pScan->isScanning() ||
                          (connectedCount != lastExpectedConnectedCount) ||
@@ -924,7 +1072,8 @@ bool connectBlePeer(int idx, const NimBLEAddress &peerAddr) {
   }
 
   Serial.printf(
-      "🎉 [GATEWAY-BLE] Successfully subscribed to Node #%d telemetry!\n", id);
+      "🎉 [GATEWAY-BLE] Successfully subscribed to Node #%d telemetry! ATT MTU=%u\n",
+      id, static_cast<unsigned>(pClient->getMTU()));
   nodesTelemetry[idx].connected = true;
   nodesTelemetry[idx].lastReceivedMillis = millis();
   nodesTelemetry[idx].lastSequence = 0;
@@ -1077,10 +1226,12 @@ void publishImuStream() {
   gw["bootId"] = gatewayBootId;
   gw["commandTopic"] = mqttCommandTopic;
 
+#if !defined(RFP605_GATEWAY_INTEGRATION)
   JsonObject pressObj = doc["pressure"].to<JsonObject>();
   pressObj["raw"] = rfp602RawValue;
   pressObj["voltage"] = round(rfp602Voltage * 100.0f) / 100.0f;
   pressObj["pressed"] = rfp602Pressed;
+#endif
 
   JsonArray nodes = doc["nodes"].to<JsonArray>();
   bool cursorAdvance[MAX_NODES] = {};
@@ -1236,6 +1387,10 @@ void publishImuStream() {
 }
 
 void readRfp602Sensor() {
+#if defined(RFP605_GATEWAY_INTEGRATION)
+  // This image reads the CD74HC4067 through the RFP605 scanner instead.
+  return;
+#else
   const unsigned long now = millis();
   if (now - lastRfp602SampleTime >= RFP602_SAMPLE_INTERVAL_MS) {
     lastRfp602SampleTime = now;
@@ -1253,7 +1408,78 @@ void readRfp602Sensor() {
     serializeJson(doc, output);
     mqttClient.publish(TOPIC_PRESSURE, output.c_str());
   }
+#endif
 }
+
+#if defined(RFP605_GATEWAY_INTEGRATION)
+void publishRfp605Stream() {
+  if (!mqttClient.connected())
+    return;
+  Rfp605Sample samples[16] = {};
+  const size_t count = rfp605ReadQueuedSamples(samples, 16);
+  if (count == 0)
+    return;
+
+  JsonDocument doc;
+  doc["type"] = "rfp605_stream";
+  doc["schema"] = "planko-rfp605-v1";
+  doc["gatewayId"] = mqttClientId;
+  doc["boot_id"] = gatewayBootId;
+  doc["scan_interval_ms"] = 50;
+  doc["sample_count"] = count;
+  doc["queue_dropped_samples"] = rfp605DroppedSamples();
+  JsonArray records = doc["samples"].to<JsonArray>();
+  for (size_t i = 0; i < count; ++i) {
+    const Rfp605Sample &sample = samples[i];
+    JsonObject row = records.add<JsonObject>();
+    char sensorId[16];
+    snprintf(sensorId, sizeof(sensorId), "RFP605_C%02u",
+             static_cast<unsigned>(sample.channel));
+    row["id"] = sensorId;
+    row["channel"] = sample.channel;
+    row["seq"] = sample.sequence;
+    row["sample_ms"] = sample.sampleMs;
+    row["baseline_raw"] = sample.baselineRaw;
+    row["press_delta_raw"] = sample.pressDeltaRaw;
+    row["deviation_raw"] = sample.deviationRaw;
+    row["pressure_raw"] = sample.pressureRaw;
+    row["voltage_mV"] = sample.voltageMv;
+    row["pressed"] = true;
+  }
+
+  String output;
+  serializeJson(doc, output);
+  if (!mqttClient.publish(TOPIC_PRESSURE, output.c_str())) {
+    static unsigned long lastPublishError = 0;
+    const unsigned long now = millis();
+    if (now - lastPublishError >= 3000) {
+      lastPublishError = now;
+      Serial.printf("[MQTT] RFP605 publish to '%s' failed (rc=%d)\n",
+                    TOPIC_PRESSURE, mqttClient.state());
+    }
+  }
+}
+
+void logRfp605StateChanges() {
+  static uint16_t previousMask = 0;
+  const uint16_t currentMask = rfp605PressedMask();
+  const uint16_t changedMask = currentMask ^ previousMask;
+  if (changedMask == 0)
+    return;
+
+  for (uint8_t channel = 0; channel < 16; ++channel) {
+    const uint16_t bit = static_cast<uint16_t>(1U << channel);
+    if ((changedMask & bit) == 0)
+      continue;
+
+    Serial.printf("[RFP605] %s C%u | pressed mask=0x%04X\n",
+                  (currentMask & bit) ? "PRESSED" : "RELEASED",
+                  static_cast<unsigned>(channel),
+                  static_cast<unsigned>(currentMask));
+  }
+  previousMask = currentMask;
+}
+#endif
 
 void publishBioTelemetry() {
   static unsigned long lastPublish = 0;
@@ -1313,9 +1539,15 @@ void handleSerialSimulator() {
   }
 
   if (input == "RFP" || input == "PRESSURE") {
+#if defined(RFP605_GATEWAY_INTEGRATION)
+    Serial.printf("[RFP605] Active mask=0x%04X | Pressed mask=0x%04X\n",
+                  static_cast<unsigned>(RFP605_ACTIVE_MASK),
+                  static_cast<unsigned>(rfp605PressedMask()));
+#else
     Serial.printf("🎯 [RFP-602] Raw ADC: %d | Voltage: %.2fV | State: %s\n",
                   rfp602RawValue, rfp602Voltage,
                   rfp602Pressed ? "PRESSED" : "IDLE");
+#endif
     return;
   }
 
@@ -1651,7 +1883,9 @@ void setupDatasetServer() {
 
 void setup() {
   Serial.begin(115200);
+#if !defined(RFP605_GATEWAY_INTEGRATION)
   Serial.setTxTimeoutMs(0);
+#endif
   // Give USB CDC time to attach
   for (int i = 0; i < 20 && !Serial; i++) {
     delay(100);
@@ -1669,6 +1903,12 @@ void setup() {
     gatewayBootId = 1;
   loadNodeConfigs();
 
+#if defined(RFP605_GATEWAY_INTEGRATION)
+  // Leave all connected sensors released during the baseline calibration.
+  rfp605Begin();
+  Serial.printf("[RFP605] CD74HC4067 ready: ADC GPIO %d, active mask 0x%04X\n",
+                RFP605_ADC_PIN, static_cast<unsigned>(RFP605_ACTIVE_MASK));
+#else
   // Initialize RFP-602 Pressure Sensor (ADC1_CH0 on GPIO 0)
   analogReadResolution(12);
   analogSetAttenuation(ADC_11db);
@@ -1676,6 +1916,7 @@ void setup() {
   Serial.printf(
       "🎯 [RFP602] Pressure sensor initialized on GPIO %d (ADC1_CH0)\n",
       RFP602_PIN);
+#endif
 
   // Initialize Pads
   for (size_t i = 0; i < TOTAL_PADS; i++) {
@@ -1744,8 +1985,7 @@ void setup() {
     esp_wifi_set_config(WIFI_IF_STA, &current_conf);
   }
 
-  WiFi.setTxPower(WIFI_POWER_8_5dBm); // Low TX power prevents voltage drop on
-                                      // ESP32-C3 DevKit during auth
+  WiFi.setTxPower(WIFI_POWER_8_5dBm); // Use reduced TX power during association.
   Serial.println("🌐 [WIFI] DHCP enabled: requesting IP, gateway and DNS from Wi-Fi AP");
   Serial.printf("⏳ [WIFI] Connecting to SSID: '%s'...\n", WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
@@ -1787,6 +2027,9 @@ void setup() {
   mqttClient.setBufferSize(4096); // Four nodes with six axes and stream metadata.
   mqttClient.setKeepAlive(30);
   mqttClient.setSocketTimeout(5);
+#if defined(RFP605_GATEWAY_INTEGRATION)
+  rfp605Start();
+#endif
   Serial.printf("🔌 MQTT Broker: %s:%u (ClientID: %s)\n", MQTT_BROKER,
                 MQTT_PORT, mqttClientId);
   maintainMqttConnection();
@@ -1801,6 +2044,9 @@ void setup() {
   Serial.println("👉 [INIT] Step 2: Initializing NimBLEDevice...");
   Serial.flush();
   NimBLEDevice::init("PlanKO_Gateway");
+  const int mtuResult = NimBLEDevice::setMTU(64);
+  Serial.printf("[BLE] Preferred ATT MTU 64: %s\n",
+                mtuResult == 0 ? "ready" : "failed");
 
   Serial.println("👉 [INIT] Step 3: Configuring BLE Scan...");
   Serial.flush();
@@ -1835,7 +2081,12 @@ void loop() {
     sendPadPressEvent(pendingMqttPadCommand);
   }
   webServer.handleClient();
+#if defined(RFP605_GATEWAY_INTEGRATION)
+  publishRfp605Stream();
+  logRfp605StateChanges();
+#else
   readRfp602Sensor();
+#endif
   handlePadInputs();
   handleSerialSimulator();
 
@@ -1913,6 +2164,18 @@ void loop() {
     if (connectedCount == 0)
       strcpy(nodesSummary, "None");
 
+#if defined(RFP605_GATEWAY_INTEGRATION)
+    Serial.printf("🌐 [GATEWAY] Wi-Fi: %s (%s) | MQTT: %s | BLE: %d/%u [%s] | "
+                  "RFP605 pressed mask: 0x%04X | Heap: %uB | Uptime: %lus\n",
+                  (WiFi.status() == WL_CONNECTED) ? "ONLINE" : "OFFLINE",
+                  (WiFi.status() == WL_CONNECTED)
+                      ? WiFi.localIP().toString().c_str()
+                      : "No IP",
+                  mqttClient.connected() ? "CONNECTED" : "DISCONNECTED",
+                  connectedCount, static_cast<unsigned>(EXPECTED_NODE_COUNT),
+                  nodesSummary, static_cast<unsigned>(rfp605PressedMask()),
+                  static_cast<unsigned>(ESP.getFreeHeap()), now / 1000);
+#else
     Serial.printf("🌐 [GATEWAY] Wi-Fi: %s (%s) | MQTT: %s | BLE: %d/%u [%s] | "
                   "RFP: %d (%s) | Heap: %uB | Uptime: %lus\n",
                   (WiFi.status() == WL_CONNECTED) ? "ONLINE" : "OFFLINE",
@@ -1924,6 +2187,7 @@ void loop() {
                   nodesSummary, rfp602RawValue,
                   rfp602Pressed ? "PRESSED" : "RELEASED",
                   static_cast<unsigned>(ESP.getFreeHeap()), now / 1000);
+#endif
   }
 }
 

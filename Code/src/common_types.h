@@ -22,9 +22,8 @@ struct __attribute__((packed)) ImuPacket {
     uint8_t  status;       // 1 = Calibrated/OK, 0 = Uncalibrated/Error
 };
 
-// The Gateway also needs the real six-axis readings for Dataset capture.
-// This second notification uses the same 20-byte payload size and is tagged
-// so old telemetry fields and raw sensor counts are never confused.
+// Legacy second packet, retained so a node can fall back for gateways that
+// negotiate only the default ATT MTU of 23 bytes.
 #define RAW_IMU_PACKET_MARKER 0xA4
 #define RAW_IMU_PACKET_MARKER_MASK 0xFE
 struct __attribute__((packed)) RawImuPacket {
@@ -38,6 +37,29 @@ struct __attribute__((packed)) RawImuPacket {
     int16_t  gy;
     int16_t  gz;
     uint8_t  marker;        // Marker high bits; low bit carries calibrated status
+};
+
+// Single BLE notification carrying the live values and raw six-axis sample.
+// It requires ATT MTU >= 36, negotiated by both the node and gateway.
+#define COMBINED_IMU_PACKET_MARKER 0xC4
+struct __attribute__((packed)) CombinedImuPacket {
+    uint8_t  nodeId;
+    uint16_t sequence;
+    uint32_t timestamp;
+    int16_t  pitch;
+    int16_t  roll;
+    int16_t  yaw;
+    int16_t  ax;
+    int16_t  ay;
+    int16_t  az;
+    int16_t  rawAx;
+    int16_t  rawAy;
+    int16_t  rawAz;
+    int16_t  rawGx;
+    int16_t  rawGy;
+    int16_t  rawGz;
+    uint8_t  status;
+    uint8_t  marker;
 };
 
 // Biomarker packet (Heart Rate, SpO2, Red/IR PPG) for MAX30102 on Node 1
@@ -57,6 +79,8 @@ struct __attribute__((packed)) BioPacket {
 
 static_assert(sizeof(ImuPacket) == 20, "ImuPacket must remain 20 bytes");
 static_assert(sizeof(RawImuPacket) == 20, "RawImuPacket must remain 20 bytes");
+static_assert(sizeof(CombinedImuPacket) == 33,
+              "CombinedImuPacket must remain 33 bytes");
 static_assert(sizeof(BioPacket) == 20, "BioPacket must remain 20 bytes");
 
 // Telemetry state stored on Gateway for each node
