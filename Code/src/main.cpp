@@ -518,7 +518,7 @@ const char *WIFI_PASS = "1212312121";
 
 // Node -> BLE -> Gateway -> local Docker Mosquitto -> subscribers.
 // Update this destination if the PC's DHCP-assigned Wi-Fi address changes.
-const char *MQTT_BROKER = "172.16.67.76";
+const char *MQTT_BROKER = "172.20.10.5";
 const uint16_t MQTT_PORT = 1883;
 const char *TOPIC_IMU = "planko/imu";
 const char *TOPIC_PAD = "planko/pad";
@@ -688,9 +688,9 @@ struct NodeConfig {
 };
 
 NodeConfig nodeConfigs[MAX_NODES] = {
-    {"Node 1 - Neck", "neck", "neck", "unknown"},
-    {"Node 2 - Back", "lumbar", "back", "unknown"},
-    {"Node 3 - Arm", "other", "other", "unknown"},
+    {"Node 1 - Upper Back", "upper_back", "back", "unknown"},
+    {"Node 2 - Lower Back", "lumbar", "back", "unknown"},
+    {"Node 3 - Wrist", "wrist", "wrist", "unknown"},
     {"Node 4", "other", "other", "unknown"}};
 
 unsigned long lastMqttStreamTime = 0;
@@ -1701,12 +1701,8 @@ bool isAllowedConfigValue(const String &value, const char *const allowed[],
 }
 
 void loadNodeConfigs() {
-  static const char *const sites[] = {
-      "wrist", "neck", "chest", "upper_back", "lumbar", "pelvis", "head",
-      "right_forearm", "left_forearm", "right_upper_arm", "left_upper_arm",
-      "shoulder", "elbow", "other"};
-  static const char *const bodyParts[] = {"neck", "back", "wrist", "chest",
-                                          "shoulder", "elbow", "other"};
+  static const char *const sites[] = {"upper_back", "lumbar", "wrist"};
+  static const char *const bodyParts[] = {"back", "wrist"};
   static const char *const sides[] = {"unknown", "left", "right"};
   // Create the namespace on first boot; read-only open reports NOT_FOUND on
   // fresh boards. Keep the compiled defaults if NVS itself is unavailable.
@@ -1788,12 +1784,8 @@ void handleNodesApi() {
 }
 
 void handleNodeConfigApi() {
-  static const char *const sites[] = {
-      "wrist", "neck", "chest", "upper_back", "lumbar", "pelvis", "head",
-      "right_forearm", "left_forearm", "right_upper_arm", "left_upper_arm",
-      "shoulder", "elbow", "other"};
-  static const char *const bodyParts[] = {"neck", "back", "wrist", "chest",
-                                          "shoulder", "elbow", "other"};
+  static const char *const sites[] = {"upper_back", "lumbar", "wrist"};
+  static const char *const bodyParts[] = {"back", "wrist"};
   static const char *const sides[] = {"unknown", "left", "right"};
   if (!webServer.hasArg("node_id")) {
     webServer.send(400, "application/json",

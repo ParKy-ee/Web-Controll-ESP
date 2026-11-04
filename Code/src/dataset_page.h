@@ -73,10 +73,10 @@ static const char DATASET_PAGE[] PROGMEM = R"PLANKOHTML(
 <script>
 (() => {
   const $ = id => document.getElementById(id);
-  const SITE_OPTIONS = ["wrist","right_forearm","left_forearm","right_upper_arm","left_upper_arm","shoulder","elbow","neck","chest","upper_back","lumbar","pelvis","head","other"];
-  const SITE_LABELS = {wrist:"ข้อมือ",right_forearm:"ท่อนแขนขวา",left_forearm:"ท่อนแขนซ้าย",right_upper_arm:"ต้นแขนขวา",left_upper_arm:"ต้นแขนซ้าย",shoulder:"ไหล่",elbow:"ข้อศอก",neck:"คอ",chest:"หน้าอก",upper_back:"หลังส่วนบน",lumbar:"หลังส่วนล่าง",pelvis:"เชิงกราน",head:"ศีรษะ",other:"อื่น ๆ"};
-  const BODY_OPTIONS = ["neck","back","wrist","chest","shoulder","elbow","other"];
-  const BODY_LABELS = {neck:"คอ",back:"หลัง",wrist:"ข้อมือ",chest:"หน้าอก",shoulder:"ไหล่",elbow:"ข้อศอก",other:"อื่น ๆ"};
+  const SITE_OPTIONS = ["upper_back","lumbar","wrist"];
+  const SITE_LABELS = {upper_back:"หลังส่วนบน",lumbar:"หลังส่วนล่าง",wrist:"ข้อมือ"};
+  const BODY_OPTIONS = ["back","wrist"];
+  const BODY_LABELS = {back:"หลัง",wrist:"ข้อมือ"};
   const PHASE_LABELS = {neutral:"neutral",approaching:"approaching",holding:"holding",returning:"returning"};
   const cursors = {};
   const nodeCache = {};

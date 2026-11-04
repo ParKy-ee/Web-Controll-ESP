@@ -1843,7 +1843,7 @@
     const mqttUrlParams = new URLSearchParams(location.search);
     const requestedMqttPort = Number(mqttUrlParams.get("mqttPort") || 9001);
     const MQTT_CONFIG = Object.freeze({
-      host: mqttUrlParams.get("broker") || location.hostname || "127.0.0.1",
+      host: mqttUrlParams.get("broker") || "172.20.10.5",
       port: Number.isInteger(requestedMqttPort) && requestedMqttPort > 0 && requestedMqttPort <= 65535
         ? requestedMqttPort : 9001,
       path: mqttUrlParams.get("mqttPath") || "/mqtt",

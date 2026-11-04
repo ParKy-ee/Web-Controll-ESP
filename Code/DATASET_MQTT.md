@@ -24,7 +24,7 @@ publish loop per Node. The browser subscribes with MQTT over
    exact same `action_label` is written to every selected Node sample, so the
    label describes one case rather than a body-part-specific action. Fill
    Subject, Session and Trial IDs.
-5. Start recording both selected Nodes together. The capture makes one CSV per
+5. Start recording all selected Nodes together. The capture makes one CSV per
    sensor plus a manifest; samples from other Nodes are ignored. Node cards
    report `LIVE` or briefly `HOLD`, accepted sample rate, count and gaps.
 6. Stop recording. Download each per-node CSV and the capture manifest, or use
