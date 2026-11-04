@@ -77,6 +77,17 @@ struct __attribute__((packed)) BioPacket {
     uint8_t  marker;       // BIO_PACKET_MARKER (0xB4)
 };
 
+// Independent low-rate notification; fits even the default ATT MTU.
+#define BATTERY_PACKET_MARKER 0xD4
+#define BATTERY_PERCENT_UNKNOWN 255
+struct __attribute__((packed)) BatteryPacket {
+    uint8_t nodeId;
+    uint16_t millivolts;
+    uint8_t percent;       // 0..100 estimate, or 255 for invalid voltage
+    uint8_t marker;
+};
+static_assert(sizeof(BatteryPacket) == 5, "BatteryPacket must remain 5 bytes");
+
 static_assert(sizeof(ImuPacket) == 20, "ImuPacket must remain 20 bytes");
 static_assert(sizeof(RawImuPacket) == 20, "RawImuPacket must remain 20 bytes");
 static_assert(sizeof(CombinedImuPacket) == 33,
@@ -105,6 +116,10 @@ struct NodeTelemetry {
     uint32_t rawRed;
     uint32_t rawIr;
     uint32_t lastRawReceivedMillis;
+    uint16_t batteryMillivolts;
+    uint8_t batteryPercent;
+    bool batteryReceived;
+    uint32_t lastBatteryReceivedMillis;
     volatile unsigned long lastReceivedMillis; // volatile: written by BLE callback task, read by main loop
 };
 

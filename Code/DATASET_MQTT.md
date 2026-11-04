@@ -19,9 +19,10 @@ publish loop per Node. The browser subscribes with MQTT over
 3. The monitor pins the first Gateway ID it receives. Set your exact Gateway ID
    in the filter if another Gateway is selected. Configure actual sensor
    mounting locations on the Gateway's HTTP recorder before capture.
-4. Select the upper and lower Node, then choose one shared Case/Action Label.
-   The exact same `action_label` is written to every selected Node sample, so
-   the label describes one case rather than a body-part-specific action. Fill
+4. Configure each connected Node's actual mounting site, body part and side.
+   Select all Nodes to record, then choose one shared Case/Action Label. The
+   exact same `action_label` is written to every selected Node sample, so the
+   label describes one case rather than a body-part-specific action. Fill
    Subject, Session and Trial IDs.
 5. Start recording both selected Nodes together. The capture makes one CSV per
    sensor plus a manifest; samples from other Nodes are ignored. Node cards
@@ -53,11 +54,13 @@ from phase training until reviewed and annotated. Manual phase annotations
 are marked reviewed only when explicitly confirmed. Action labels must still
 be checked against what the participant actually did.
 
-Save the CSVs in `imu_output/`, then from `Code/`:
+Keep each per-node CSV together with its capture manifest in
+`dataset/multinode/`. This is the canonical training dataset folder. When no
+CSV paths are passed, `tools/train_model.py` reads every `*.csv` in this folder.
+Add each new recording's CSVs and manifest there before retraining. From `Code/`:
 
 ```powershell
-$trainingCsvPaths = @(Get-ChildItem imu_output -Filter *.csv | Select-Object -ExpandProperty FullName)
-python tools/train_model.py @trainingCsvPaths --window 1.0 --output models/new_model
+python tools/train_model.py --window 1.0 --output models/new_model
 ```
 
 The current training tool creates per-sensor windows from all supplied Node

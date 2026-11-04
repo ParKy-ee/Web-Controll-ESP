@@ -206,6 +206,13 @@ public:
         gy = ((float)rGy / 65.5f) - gyOffset;
         gz = ((float)rGz / 65.5f) - gzOffset;
 
+        // Suppress residual gyro bias/noise after startup calibration. This is
+        // especially important for yaw, which has no accelerometer reference.
+        const float gyroDeadbandDps = 0.5f;
+        if (fabsf(gx) < gyroDeadbandDps) gx = 0.0f;
+        if (fabsf(gy) < gyroDeadbandDps) gy = 0.0f;
+        if (fabsf(gz) < gyroDeadbandDps) gz = 0.0f;
+
         // Compute delta time
         unsigned long currentMicros = micros();
         float dt = (currentMicros - lastFilterMicros) / 1000000.0f;
@@ -216,9 +223,10 @@ public:
         float accPitch = atan2(-ax, sqrt(ay * ay + az * az)) * 180.0f / M_PI;
         float accRoll  = atan2(ay, az) * 180.0f / M_PI;
 
-        // Complementary Filter: 96% Gyroscope integration + 4% Accelerometer reference
-        pitch = 0.96f * (pitch + gx * dt) + 0.04f * accPitch;
-        roll  = 0.96f * (roll + gy * dt) + 0.04f * accRoll;
+        // MPU6050 axes: X gyro rotates roll; Y gyro rotates pitch.
+        // Complementary Filter: 96% gyroscope integration + 4% accelerometer reference.
+        pitch = 0.96f * (pitch + gy * dt) + 0.04f * accPitch;
+        roll  = 0.96f * (roll + gx * dt) + 0.04f * accRoll;
         yaw  += gz * dt;
 
         if (yaw > 180.0f) yaw -= 360.0f;
