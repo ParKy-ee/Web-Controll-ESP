@@ -165,6 +165,28 @@
     .badge-press { padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 700; background: #1c2c39; color: var(--muted); }
     .badge-press.active { background: #153c32; color: var(--mint); }
 
+    /* Per-node battery telemetry from the Gateway MQTT stream */
+    .battery-list { display: grid; gap: 8px; }
+    .battery-node { padding: 10px; background: #0d151e; border: 1px solid #1a2a38; border-radius: 8px; }
+    .battery-node-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .battery-node-title { font-size: 12px; font-weight: 700; }
+    .battery-node-state { font-size: 10px; color: var(--muted); text-align: right; }
+    .battery-node-state.live { color: var(--mint); }
+    .battery-node-state.waiting { color: var(--orange); }
+    .battery-node-state.invalid { color: var(--orange); }
+    .battery-reading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-top: 7px; font-variant-numeric: tabular-nums; }
+    .battery-percent { font-size: 20px; font-weight: 750; }
+    .battery-voltage { color: var(--muted); font-size: 12px; }
+    .battery-meter { margin-top: 8px; height: 9px; overflow: hidden; background: #172330; border: 1px solid #243646; border-radius: 999px; }
+    .battery-fill { height: 100%; width: 0%; background: var(--mint); border-radius: inherit; transition: width .25s ease; }
+    .battery-fill.warn { background: var(--orange); }
+    .battery-fill.low { background: var(--red); }
+    .battery-fill.stale { opacity: .35; }
+    .battery-summary { color: var(--muted); font-size: 10px; font-weight: 700; }
+    .battery-summary.online { color: var(--mint); }
+    .battery-summary.waiting { color: var(--orange); }
+    .battery-note { margin: 8px 0 0; color: var(--muted); font-size: 10px; line-height: 1.4; }
+
     /* ============================================================================== */
     /* DATASET & AI MACHINE LEARNING SECTION */
     /* ============================================================================== */
@@ -397,6 +419,14 @@
             <span style="color:var(--muted);">Voltage: <b id="pressVolt" style="color:var(--text);">0.00 V</b></span>
             <span style="color:var(--muted);">ช่วงสเกล: <b>0 - 4095 (12-bit)</b></span>
           </div>
+        </aside>
+        <aside class="side-card battery-card">
+          <div class="side-heading">
+            <span>Node Battery</span>
+            <span id="batterySummary" class="battery-summary">Waiting for MQTT</span>
+          </div>
+          <div id="nodeBatteryList" class="battery-list" aria-live="polite"></div>
+          <p class="battery-note">mV is the latest ADC reading reported by the Gateway. Percent is an estimate for a 1-cell battery.</p>
         </aside>
       </div>
     </div>
@@ -692,6 +722,8 @@
     const pressVolt = $("pressVolt");
     const pressFill = $("pressFill");
     const pressBadge = $("pressBadge");
+    const nodeBatteryList = $("nodeBatteryList");
+    const batterySummary = $("batterySummary");
     const fpsText = $("fpsText");
     const seqText = $("seqText");
     const uptimeText = $("uptimeText");
@@ -700,6 +732,10 @@
     let mqttClient = null;
     let isPaused = false;
     let selectedNodeId = 1;
+    const nodeBatteryStates = new Map([1, 2].map(nodeId => [nodeId, {
+      nodeId, connected: false, lastNodeAt: 0, batteryReceived: false, batteryValid: false,
+      batteryPercent: null, batteryMv: null, lastBatteryAt: 0, mountSite: ""
+    }]));
 
     // Orientation state with tare offsets
     let tareRoll = 0, tarePitch = 0, tareYaw = 0;
@@ -887,6 +923,25 @@
     const recUpperNodeSelect = $("recUpperNodeSelect");
     const recLowerNodeSelect = $("recLowerNodeSelect");
     const sharedActionLabel = $("sharedActionLabel");
+    const recNodeGrid = recUpperNodeSelect.parentElement.parentElement;
+    const recModeField = document.createElement("label");
+    recModeField.className = "rec-field";
+    recModeField.append(document.createTextNode("Recording mode"));
+    const recModeSelect = document.createElement("select");
+    recModeSelect.id = "recModeSelect";
+    recModeSelect.append(new Option("Single Node", "single"), new Option("Upper + lower pair", "pair"));
+    recModeSelect.value = "single";
+    recModeField.append(recModeSelect);
+    const recSingleNodeField = document.createElement("label");
+    recSingleNodeField.className = "rec-field";
+    recSingleNodeField.append(document.createTextNode("Node to record"));
+    const recSingleNodeSelect = document.createElement("select");
+    recSingleNodeSelect.id = "recSingleNodeSelect";
+    recSingleNodeSelect.append(new Option("Waiting for Node...", ""));
+    recSingleNodeField.append(recSingleNodeSelect);
+    recNodeGrid.prepend(recModeField, recSingleNodeField);
+    const recUpperNodeField = recUpperNodeSelect.closest("label");
+    const recLowerNodeField = recLowerNodeSelect.closest("label");
     let recordingNodeIds = new Set();
     const NODE_HOLD_MS = 2000;
 
@@ -916,16 +971,44 @@
           available.find(node => Number(node.nodeId) === fallbackId) || available[0];
         select.value = String((preserved || preferred)?.nodeId || "");
       };
+      fill(recSingleNodeSelect, [], Number(nodeSelect.value) || 1, 0);
       fill(recUpperNodeSelect, ["upper_back", "chest"], 1, 0);
       fill(recLowerNodeSelect, ["lumbar", "pelvis"], 2, Number(recUpperNodeSelect.value) || 0);
       updateRecordPairStatus();
     }
 
+    function updateRecordModeLayout() {
+      const singleMode = recModeSelect.value === "single";
+      recSingleNodeField.hidden = !singleMode;
+      recUpperNodeField.hidden = singleMode;
+      recLowerNodeField.hidden = singleMode;
+      recStartBtn.textContent = singleMode
+        ? "🔴 Start recording one Node"
+        : "🔴 Start recording upper + lower Nodes";
+      const heading = recNodeGrid.parentElement.querySelector("strong");
+      const help = recNodeGrid.previousElementSibling;
+      if (heading) heading.textContent = "IMU recording setup";
+      if (help) help.textContent = "Choose one live IMU node or an upper/lower pair. Every selected node uses the same Case/Action label.";
+      updateRecordPairStatus();
+    }
+
     function updateRecordPairStatus() {
       const byId = new Map(liveCaptureNodeEntries().map(entry => [Number(entry.node.nodeId), entry]));
+      const status = $("recordPairStatus");
+      if (recModeSelect.value === "single") {
+        const entry = byId.get(Number(recSingleNodeSelect.value));
+        if (!entry) {
+          status.textContent = "Select one live Node from the list to start recording.";
+          status.style.color = "var(--orange)";
+          return;
+        }
+        const nodeState = entry.present && entry.currentValid ? "LIVE" : "HOLD";
+        status.textContent = `Ready to record Node #${entry.node.nodeId} (${entry.node.mount_site || "site?"}) · ${nodeState} · Case: ${sharedActionLabel.value || "not selected"}`;
+        status.style.color = sharedActionLabel.value ? "var(--mint)" : "var(--orange)";
+        return;
+      }
       const upper = byId.get(Number(recUpperNodeSelect.value));
       const lower = byId.get(Number(recLowerNodeSelect.value));
-      const status = $("recordPairStatus");
       if (!upper || !lower || upper === lower) {
         status.textContent = "ต้องมี IMU จริงสอง Node ที่แยกกัน ก่อนเริ่มบันทึก";
         status.style.color = "var(--orange)";
@@ -952,7 +1035,39 @@
       refreshRecordPairOptions();
       refreshCaptureStats();
     });
+    recModeSelect.addEventListener("change", () => {
+      updateRecordModeLayout();
+      refreshCaptureStats();
+    });
+    recSingleNodeSelect.addEventListener("change", () => {
+      updateRecordPairStatus();
+      refreshCaptureStats();
+    });
     sharedActionLabel.addEventListener("change", updateRecordPairStatus);
+    updateRecordModeLayout();
+
+    function addCaptureRateSample(entry, message, node, sample) {
+      const source = {...node, ...sample};
+      const row = PlanKOImu.sampleFromMessage(message, source, {
+        mount_site: node.mount_site, body_part: node.body_part,
+        side: node.side || "unknown"
+      });
+      const previous = entry.rateWindow.at(-1);
+      if (previous && (previous.stream_epoch !== row.stream_epoch ||
+          row.device_time_s < previous.device_time_s)) {
+        entry.rateWindow.length = 0;
+      }
+      const last = entry.rateWindow.at(-1);
+      if (last && last.stream_epoch === row.stream_epoch && last.seq === row.seq) return;
+      entry.rateWindow.push({
+        seq: row.seq, stream_epoch: row.stream_epoch,
+        device_time_s: row.device_time_s
+      });
+      const cutoff = row.device_time_s - 3;
+      while (entry.rateWindow.length && entry.rateWindow[0].device_time_s < cutoff) {
+        entry.rateWindow.shift();
+      }
+    }
 
     function updateCaptureNodes(message) {
       const now = Date.now();
@@ -973,12 +1088,21 @@
           card.append(title, context, status);
           if (!captureNodes.size) $("recNodeList").replaceChildren();
           $("recNodeList").appendChild(card);
-          entry = {card, title, context, status, node, lastSeen: now,
+          entry = {card, title, context, status, node, lastSeen: now, rateWindow: [],
             lastValidAt: 0, lastValidNode: null, valid: false, currentValid: false, present: false};
           captureNodes.set(key, entry);
         }
         entry.present = true;
         entry.lastSeen = now;
+        const rateSamples = Array.isArray(node.samples) && node.samples.length
+          ? node.samples : [node];
+        for (const sample of rateSamples) {
+          try {
+            addCaptureRateSample(entry, message, node, sample);
+          } catch (error) {
+            // A bad sample does not reset the independent display-rate window.
+          }
+        }
         try {
           PlanKOImu.sampleFromMessage(message, node, {
             mount_site: node.mount_site, body_part: node.body_part, side: node.side || "unknown"
@@ -1017,13 +1141,14 @@
         const holdAge = Date.now() - entry.lastValidAt;
         const live = !!entry.lastValidNode && holdAge < NODE_HOLD_MS;
         const current = live && entry.present && entry.currentValid;
-        const recent = stream?.window.rows || [];
+        const recent = entry.rateWindow;
         const span = recent.length > 1 ? recent.at(-1).device_time_s - recent[0].device_time_s : 0;
         const rate = live && span > 0 ? ((recent.length - 1) / span).toFixed(1) + " Hz" : "— Hz";
         const role = Number(entry.node.nodeId) === upperId ? "หลังบน" : Number(entry.node.nodeId) === lowerId ? "หลังล่าง" : "ไม่เลือก";
         const linkState = current ? "LIVE" : live ? "HOLD" : "รอ IMU จริง";
         entry.status.textContent = `${linkState} · ${role} · ${rate} · ${count} samples · ขาด ${stream?.missing || 0} · ตัดซ้ำ ${stream?.duplicates || 0} · ไม่ครบ ${stream?.invalid || 0}`;
         entry.status.style.color = current ? "var(--mint)" : "var(--orange)";
+        entry.status.textContent += ` · Gateway BLE dropped ${entry.node.dropped ?? "—"}`;
       }
       updateRecordPairStatus();
       if (isRecording) sampleCounterText.textContent = `${total.toLocaleString()} samples · ${datasetRecorder.streams.size} Node/contexts · ${((Date.now() - recordStartTime) / 1000).toFixed(1)}s`;
@@ -1031,19 +1156,31 @@
     setInterval(refreshCaptureStats, 500);
 
     function recordingControls(active) {
-      for (const id of ["gatewayFilter", "recSubjectId", "recSessionId", "recTrialId", "guidedTimerCheck", "recPhaseReviewed", "recClearBtn", "recUpperNodeSelect", "recLowerNodeSelect", "sharedActionLabel"]) $(id).disabled = active;
+      for (const id of ["gatewayFilter", "recSubjectId", "recSessionId", "recTrialId", "guidedTimerCheck", "recPhaseReviewed", "recClearBtn", "recUpperNodeSelect", "recLowerNodeSelect", "sharedActionLabel", "recModeSelect", "recSingleNodeSelect"]) $(id).disabled = active;
       recStartBtn.disabled = active;
       recStopBtn.disabled = !active;
     }
 
     recStartBtn.addEventListener("click", () => {
+      const singleMode = recModeSelect.value === "single";
+      const singleId = Number(recSingleNodeSelect.value);
       const upperId = Number(recUpperNodeSelect.value);
       const lowerId = Number(recLowerNodeSelect.value);
-      if (!Number.isInteger(upperId) || !Number.isInteger(lowerId) || upperId < 1 || lowerId < 1 || upperId === lowerId) {
+      if (!singleMode && (!Number.isInteger(upperId) || !Number.isInteger(lowerId) || upperId < 1 || lowerId < 1 || upperId === lowerId)) {
+        if (Number.isInteger(singleId) && singleId >= 1) {
+          alert("Pair mode needs two different live Nodes. Switch Recording mode to Single Node to record one."); return;
+        }
         alert("เลือก Node หลังบนและหลังล่างให้เป็นคนละ Node ก่อนเริ่ม"); return;
       }
       const liveById = new Map(liveCaptureNodeEntries().map(entry => [Number(entry.node.nodeId), entry]));
-      const selectedEntries = [liveById.get(upperId), liveById.get(lowerId)];
+      if (singleMode && (!Number.isInteger(singleId) || singleId < 1)) {
+        alert("Select one Node before starting the recording."); return;
+      }
+      const selectedNodeIds = singleMode ? [singleId] : [upperId, lowerId];
+      const selectedEntries = selectedNodeIds.map(nodeId => liveById.get(nodeId));
+      if (singleMode && !selectedEntries[0]) {
+        alert("Wait for the selected Node to send live IMU samples, then try again."); return;
+      }
       if (selectedEntries.some(entry => !entry)) {
         alert("รอข้อมูล IMU จริงของ Node หลังบนและหลังล่างจาก Gateway ก่อนเริ่ม"); return;
       }
@@ -1056,13 +1193,17 @@
       const gatewayId = $("gatewayFilter").value.trim();
       if (!gatewayId) { alert("เลือก Gateway ID ก่อนเริ่มบันทึก"); return; }
       metadata.action_label = sharedActionLabel.value;
-      recordingNodeIds = new Set([upperId, lowerId]);
+      metadata.record_mode = singleMode ? "single_node" : "paired_nodes";
+      recordingNodeIds = new Set(selectedNodeIds);
       recordStartTime = Date.now();
       datasetRecorder.start(gatewayId, metadata, recordStartTime);
       isRecording = true;
       recordingControls(true);
       recStatusPill.className = "rec-badge recording";
       recStatusPill.textContent = `● ${sharedActionLabel.value} · Node #${upperId} + #${lowerId} · ${gatewayId}`;
+      const selectedNodeLabel = selectedNodeIds.length === 1
+        ? `Node #${selectedNodeIds[0]}` : `Nodes #${selectedNodeIds.join(" + #")}`;
+      recStatusPill.textContent = `● ${sharedActionLabel.value} · ${selectedNodeLabel} · ${gatewayId}`;
       playBeep(660, 0.2);
 
       if (guidedTimerCheck.checked) {
@@ -1203,6 +1344,111 @@
         select.value = selected;
       }
     }
+
+    function updateNodeBatteryData(nodes) {
+      if (!Array.isArray(nodes)) return;
+      const now = Date.now();
+      for (const node of nodes) {
+        const nodeId = Number(node?.nodeId);
+        if (!Number.isInteger(nodeId) || nodeId < 1 || nodeId > 4) continue;
+        let state = nodeBatteryStates.get(nodeId);
+        if (!state) {
+          state = {
+            nodeId, connected: false, lastNodeAt: 0, batteryReceived: false, batteryValid: false,
+            batteryPercent: null, batteryMv: null, lastBatteryAt: 0, mountSite: ""
+          };
+          nodeBatteryStates.set(nodeId, state);
+        }
+
+        state.connected = node.connected === true;
+        state.lastNodeAt = now;
+        state.mountSite = String(node.mount_site || node.body_part || "");
+        const percent = Number(node.battery_percent);
+        const millivolts = node.battery_mv == null ? NaN : Number(node.battery_mv);
+        state.batteryReceived = (node.battery_received === true || node.battery_valid === true) &&
+          Number.isFinite(millivolts);
+        state.batteryValid = node.battery_valid === true &&
+          Number.isFinite(percent) && percent >= 0 && percent <= 100 &&
+          Number.isFinite(millivolts) && millivolts >= 2500 && millivolts <= 4500;
+        if (state.batteryReceived) {
+          state.batteryMv = millivolts;
+          state.lastBatteryAt = now;
+        }
+        state.batteryPercent = state.batteryValid ? percent : null;
+      }
+    }
+
+    function renderNodeBatteryData() {
+      const now = Date.now();
+      let connectedCount = 0;
+      let packetCount = 0;
+      let liveCount = 0;
+      nodeBatteryList.replaceChildren();
+
+      for (const nodeId of [...nodeBatteryStates.keys()].sort((a, b) => a - b)) {
+        const state = nodeBatteryStates.get(nodeId);
+        const nodeRecent = state.lastNodeAt > 0 && now - state.lastNodeAt < 3000;
+        const connected = nodeRecent && state.connected;
+        const batteryAge = state.lastBatteryAt > 0 ? now - state.lastBatteryAt : Infinity;
+        const hasReading = state.batteryMv !== null && batteryAge < 30000;
+        const batteryLive = connected && state.batteryReceived && state.batteryValid && hasReading;
+        if (connected) connectedCount++;
+        if (connected && state.batteryReceived) packetCount++;
+        if (batteryLive) liveCount++;
+
+        const row = document.createElement("div");
+        row.className = "battery-node";
+        const head = document.createElement("div");
+        head.className = "battery-node-head";
+        const title = document.createElement("strong");
+        title.className = "battery-node-title";
+        title.textContent = `Node #${nodeId}${state.mountSite ? ` · ${state.mountSite}` : ""}`;
+        const status = document.createElement("span");
+        status.className = `battery-node-state${batteryLive ? " live" : connected && state.batteryReceived && !state.batteryValid ? " invalid" : connected && !state.batteryReceived ? " waiting" : ""}`;
+        if (batteryLive) status.textContent = "LIVE";
+        else if (!state.lastNodeAt) status.textContent = "Waiting for Node";
+        else if (!connected && hasReading) status.textContent = `OFFLINE · last ${Math.floor(batteryAge / 1000)}s ago`;
+        else if (!connected) status.textContent = "DISCONNECTED";
+        else if (state.batteryReceived && !state.batteryValid) status.textContent = "ADC RECEIVED · INVALID";
+        else if (hasReading && !state.batteryReceived) status.textContent = `NO RECENT PACKET · last ${Math.floor(batteryAge / 1000)}s ago`;
+        else status.textContent = "Waiting for battery packet";
+        head.append(title, status);
+
+        const reading = document.createElement("div");
+        reading.className = "battery-reading";
+        const percent = document.createElement("strong");
+        percent.className = "battery-percent";
+        percent.textContent = batteryLive ? `${Math.round(state.batteryPercent)}%` : "--%";
+        const voltage = document.createElement("span");
+        voltage.className = "battery-voltage";
+        voltage.textContent = hasReading ? `${Math.round(state.batteryMv)} mV` : "-- mV";
+        reading.append(percent, voltage);
+
+        const meter = document.createElement("div");
+        meter.className = "battery-meter";
+        meter.setAttribute("role", "meter");
+        meter.setAttribute("aria-label", `Node ${nodeId} battery level`);
+        meter.setAttribute("aria-valuemin", "0");
+        meter.setAttribute("aria-valuemax", "100");
+        if (batteryLive) meter.setAttribute("aria-valuenow", String(Math.round(state.batteryPercent)));
+        const fill = document.createElement("div");
+        const level = batteryLive ? Math.max(0, Math.min(100, state.batteryPercent)) : 0;
+        fill.className = `battery-fill${level <= 15 && batteryLive ? " low" : level < 40 && batteryLive ? " warn" : ""}${batteryLive ? "" : " stale"}`;
+        fill.style.width = `${level}%`;
+        meter.append(fill);
+
+        row.append(head, reading, meter);
+        nodeBatteryList.append(row);
+      }
+
+      batterySummary.textContent = connectedCount
+        ? `Packets ${packetCount}/${connectedCount} · valid ${liveCount}`
+        : "No Node online";
+      batterySummary.className = `battery-summary${liveCount ? " online" : connectedCount ? " waiting" : ""}`;
+    }
+
+    renderNodeBatteryData();
+    setInterval(renderNodeBatteryData, 1000);
 
     function resetPlankReadout(reason = "Select two connected IMUs, then calibrate while holding a correct plank for 2 seconds.") {
       $("plankOutPhase").textContent = "unknown";
@@ -1902,6 +2148,7 @@
             }, now);
           }
           updatePlankNodeOptions(data.nodes);
+          updateNodeBatteryData(data.nodes);
           processPlankMessage(data);
           const node = data.nodes.find(n => n.nodeId === selectedNodeId);
           if (node) {

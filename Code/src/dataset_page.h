@@ -73,10 +73,10 @@ static const char DATASET_PAGE[] PROGMEM = R"PLANKOHTML(
 <script>
 (() => {
   const $ = id => document.getElementById(id);
-  const SITE_OPTIONS = ["wrist","neck","chest","upper_back","lumbar","pelvis","head","other"];
-  const SITE_LABELS = {wrist:"ข้อมือ",neck:"คอ",chest:"หน้าอก",upper_back:"หลังส่วนบน",lumbar:"หลังส่วนล่าง",pelvis:"เชิงกราน",head:"ศีรษะ",other:"อื่น ๆ"};
-  const BODY_OPTIONS = ["neck","back","wrist","chest","other"];
-  const BODY_LABELS = {neck:"คอ",back:"หลัง",wrist:"ข้อมือ",chest:"หน้าอก",other:"อื่น ๆ"};
+  const SITE_OPTIONS = ["wrist","right_forearm","left_forearm","right_upper_arm","left_upper_arm","shoulder","elbow","neck","chest","upper_back","lumbar","pelvis","head","other"];
+  const SITE_LABELS = {wrist:"ข้อมือ",right_forearm:"ท่อนแขนขวา",left_forearm:"ท่อนแขนซ้าย",right_upper_arm:"ต้นแขนขวา",left_upper_arm:"ต้นแขนซ้าย",shoulder:"ไหล่",elbow:"ข้อศอก",neck:"คอ",chest:"หน้าอก",upper_back:"หลังส่วนบน",lumbar:"หลังส่วนล่าง",pelvis:"เชิงกราน",head:"ศีรษะ",other:"อื่น ๆ"};
+  const BODY_OPTIONS = ["neck","back","wrist","chest","shoulder","elbow","other"];
+  const BODY_LABELS = {neck:"คอ",back:"หลัง",wrist:"ข้อมือ",chest:"หน้าอก",shoulder:"ไหล่",elbow:"ข้อศอก",other:"อื่น ๆ"};
   const PHASE_LABELS = {neutral:"neutral",approaching:"approaching",holding:"holding",returning:"returning"};
   const cursors = {};
   const nodeCache = {};
@@ -116,7 +116,7 @@ static const char DATASET_PAGE[] PROGMEM = R"PLANKOHTML(
         <label class="field">ส่วนร่างกาย<select class="node-body">${optionsHtml(BODY_OPTIONS,BODY_LABELS)}</select></label>
         <label class="field">ข้าง<select class="node-side"><option value="unknown">ไม่ระบุ</option><option value="left">ซ้าย</option><option value="right">ขวา</option></select></label>
       </div><div class="controls"><button class="save-config" type="button">บันทึกตำแหน่ง</button><span class="small muted config-status"></span></div>
-      <div class="node-foot"></div>`;
+      <div class="node-battery small muted"></div><div class="node-foot"></div>`;
     card.querySelector(".node-head strong").textContent = `Node ${node.nodeId}`;
     card.querySelector(".node-name").value = node.name || `Node ${node.nodeId}`;
     card.querySelector(".node-site").value = node.mount_site || "other";
@@ -133,6 +133,10 @@ static const char DATASET_PAGE[] PROGMEM = R"PLANKOHTML(
     const status = card.querySelector(".node-status");
     status.textContent = node.connected ? (node.hasData ? "BLE connected · รับข้อมูล" : "BLE connected · รอข้อมูล IMU") : "ออฟไลน์";
     status.classList.toggle("online", !!node.connected && !!node.hasData);
+    card.querySelector(".node-battery").textContent = node.battery_valid === true &&
+      Number.isFinite(node.battery_percent) && Number.isFinite(node.battery_mv)
+      ? `แบต ≈ ${node.battery_percent}% · ${(node.battery_mv / 1000).toFixed(2)} V`
+      : "แบต: — (ยังไม่มีข้อมูลปัจจุบัน)";
     card.querySelector(".node-foot").textContent = `UID: ${node.sensor_uid || "ยังไม่พบ"} · Seq: ${node.latest_seq || 0} · ตกหล่น: ${node.total_dropped || 0}${recording && recorders[node.nodeId] ? ` · บันทึก ${recorders[node.nodeId].rows.length} samples` : ""}`;
   }
   async function refreshNodeList() {

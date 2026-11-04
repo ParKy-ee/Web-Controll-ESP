@@ -19,14 +19,48 @@ The Gateway can connect to four Nodes at once. The recorder shows each Node's
 connection and sensor identity. Configure its display name and body location in
 the page; the defaults are Node 1 at the neck and Node 2 at the back/lumbar.
 
-Open the root `index.html` dashboard in a browser. It connects to Mosquitto at
-`wss://test.mosquitto.org:8081/mqtt`, subscribes to `planko/imu` and
-`planko/pad`, and filters the public topics by Gateway ID. Pad buttons publish
-targeted commands on the Gateway's `commandTopic`; the resulting pad event is
-published back on `planko/pad`. These are simulated pad events and do not
-electrically activate a GPIO input.
+Open the root `index.html` dashboard in a browser on the broker PC. It connects
+to the local WebSocket listener at `ws://127.0.0.1:9001/mqtt`, subscribes to
+`planko/imu` and `planko/pad`, and filters messages by Gateway ID. Pad buttons
+publish targeted commands on the Gateway's `commandTopic`; the resulting pad
+event is published back on `planko/pad`. These are simulated pad events and do
+not electrically activate a GPIO input.
 
 ## Dataset capture
+
+### Node battery telemetry (ESP32-C3 Super Mini, Nodes 1–4)
+
+All four Node environments use GPIO4 (`BATTERY_ADC_PIN`, overrideable by a
+build flag) for a 1S Li-ion/LiPo battery voltage divider:
+
+```text
+TP4056 OUT+ ---- 10k ohm ----+---- GPIO4
+                           |
+                        10k ohm
+                           |
+TP4056 OUT- ----------------+---- Node GND
+```
+
+An optional 100 nF ceramic capacitor goes between GPIO4 and OUT-/GND.
+The existing OUT+ to Node 5V power wire is a separate branch; never connect
+OUT+ directly to GPIO4. This measurement circuit does not regulate the Node's
+power supply. Battery operation through the board's 5V input depends on its
+onboard regulator and may stop before the cell is empty.
+
+Nodes average 16 calibrated ADC millivolt readings, multiply by two, and send
+a separate 5-byte battery BLE notification every 5 seconds and on subscription.
+Battery reporting does not require a detected IMU. The percentage is a coarse
+linear estimate (3.3V = 0%, 4.2V = 100%), not measured remaining capacity;
+charging and load affect it. Readings outside 2.5–4.5V are marked unknown.
+
+Flash the updated Gateway as well as each Node. The Gateway shows the battery
+on its local Node cards and Serial Monitor, and includes `battery_valid`,
+`battery_percent`, and `battery_mv` in `/api/nodes` and MQTT `planko/imu`.
+Values become null when disconnected, invalid, or older than 15 seconds.
+Existing IMU packet formats and sample sequence counters are unchanged.
+The root `index.html` redirects to `remote.html`; that dashboard shows a
+battery label only for connected Nodes with valid battery data. It hides the
+label on Node disconnect, missing/expired data, Gateway change, or stream timeout.
 
 1. Connect the Gateway to the Wi-Fi network that uses the `192.168.1.x`
    subnet, then open `http://192.168.1.4/` on a device on that network.
@@ -45,11 +79,17 @@ in a rolling buffer for the page.
 
 ## MQTT
 
-The data path remains **Node N -> BLE -> Gateway -> Mosquitto -> Subscriber**.
-Only the Gateway connects to MQTT; Nodes retain their BLE peripheral role.
-Gateway uses public `test.mosquitto.org:1883`; browser subscribers use
-`wss://test.mosquitto.org:8081/mqtt`. Unique client IDs prevent clients from
-disconnecting one another. This is a public test service, not a local broker.
+The data path is **Node N -> BLE -> Gateway -> local Mosquitto -> Subscriber**.
+Only the Gateway connects over MQTT; Nodes retain their BLE peripheral role.
+Start the local Docker broker with `Code/tools/start_mosquitto.ps1`. It listens
+on the PC's LAN IPv4 address at port 1883 for the Gateway and port 9001 with
+WebSockets for the dashboard. The PC address is DHCP assigned: update
+`MQTT_BROKER` in `Code/src/main.cpp` to the Wi-Fi address printed by the script,
+then rebuild and upload the Gateway if that address changes. When opened from
+`file://` on the broker PC, the root dashboard defaults to
+`ws://127.0.0.1:9001/mqtt`; a dashboard on another device can use
+`?broker=<PC-LAN-IP>`. Unique client IDs let the Gateway and dashboard connect
+at the same time.
 
 The consolidated `planko/imu` stream targets 20 Hz (50 ms), with every packet
 containing all connected nodes. Schema `planko-imu-v2` retains the existing

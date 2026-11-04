@@ -923,7 +923,11 @@
     let lastStreamAt = 0;
     const MQTT_IMU_TOPIC = 'planko/imu';
     const MQTT_PAD_TOPIC = 'planko/pad';
-    const DEFAULT_MQTT_URL = 'wss://test.mosquitto.org:8081/mqtt';
+    const LEGACY_PUBLIC_MQTT_URL = 'wss://test.mosquitto.org:8081/mqtt';
+    const requestedBrokerHost = new URLSearchParams(location.search).get('broker');
+    const defaultBrokerHost = requestedBrokerHost ||
+      (location.protocol === 'file:' ? '127.0.0.1' : location.hostname || '127.0.0.1');
+    const DEFAULT_MQTT_URL = `ws://${defaultBrokerHost}:9001/mqtt`;
     let rhythmInterval = null;
 
     // Node Telemetry State (Nodes 1-4)
@@ -964,7 +968,10 @@
 
     // Initialize UI on Load
     window.addEventListener('DOMContentLoaded', () => {
-      document.getElementById('mqttUrl').value = localStorage.getItem('planko_mqtt_url') || DEFAULT_MQTT_URL;
+      const savedMqttUrl = localStorage.getItem('planko_mqtt_url');
+      document.getElementById('mqttUrl').value =
+        savedMqttUrl && savedMqttUrl !== LEGACY_PUBLIC_MQTT_URL
+          ? savedMqttUrl : DEFAULT_MQTT_URL;
       document.getElementById('gatewayFilter').value = localStorage.getItem('planko_gateway_filter') || '';
       selectedGatewayId = document.getElementById('gatewayFilter').value.trim();
 
@@ -1015,6 +1022,7 @@
             </div>
             <span id="node_tag_${id}" class="node-source-tag">OFFLINE</span>
           </div>
+          <div id="node_battery_${id}" class="node-source-tag" hidden></div>
 
           <!-- 3D Orientation Board -->
           <div class="cube-scene">
@@ -1227,7 +1235,7 @@
       if (Array.isArray(data.nodes)) {
         data.nodes.forEach(n => {
           const id = n.nodeId;
-          if (id >= 1 && id <= 4) {
+          if (id >= 1 && id <= 4 && n.connected === true) {
             activeNodes.add(id);
             updateNodeCard(id, n);
           }
@@ -1238,6 +1246,7 @@
       for (let i = 1; i <= 4; i++) {
         if (!activeNodes.has(i)) {
           nodes[i].connected = false;
+          updateNodeBattery(i, null);
           const card = document.getElementById(`node_card_${i}`);
           const tag = document.getElementById(`node_tag_${i}`);
           if (card && card.classList.contains('connected')) {
@@ -1252,12 +1261,26 @@
     }
 
     // Update single node card UI
+    function updateNodeBattery(id, data) {
+      const battery = document.getElementById(`node_battery_${id}`);
+      if (!battery) return;
+      const show = data?.connected === true && data.battery_valid === true &&
+        Number.isInteger(data.battery_percent) && data.battery_percent >= 0 &&
+        data.battery_percent <= 100 && Number.isFinite(data.battery_mv) &&
+        data.battery_mv >= 2500 && data.battery_mv <= 4500;
+      battery.hidden = !show;
+      battery.textContent = show
+        ? `แบต ≈ ${data.battery_percent}% · ${(data.battery_mv / 1000).toFixed(2)} V`
+        : '';
+    }
+
     function updateNodeCard(id, data) {
       const card = document.getElementById(`node_card_${id}`);
       const tag = document.getElementById(`node_tag_${id}`);
       const cube = document.getElementById(`cube_${id}`);
 
       card.className = 'node-card connected';
+      updateNodeBattery(id, data);
 
       if (data.isMock) {
         tag.className = 'node-source-tag mock';
@@ -1303,6 +1326,7 @@
     function resetNodeStates() {
       for (let i = 1; i <= 4; i++) {
         nodes[i].connected = false;
+        updateNodeBattery(i, null);
         const card = document.getElementById(`node_card_${i}`);
         const tag = document.getElementById(`node_tag_${i}`);
         const cube = document.getElementById(`cube_${i}`);

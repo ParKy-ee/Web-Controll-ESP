@@ -70,6 +70,40 @@ bool initMax30102() {
 #define I2C_SCL_PIN 9
 #endif
 
+// ESP32-C3 Super Mini: OUT+ -- 10k -- GPIO4 -- 10k -- OUT-/GND.
+#ifndef BATTERY_ADC_PIN
+#define BATTERY_ADC_PIN 4
+#endif
+constexpr unsigned long BATTERY_INTERVAL_MS = 5000;
+constexpr uint16_t BATTERY_EMPTY_MV = 3300;
+constexpr uint16_t BATTERY_FULL_MV = 4200;
+unsigned long lastBatterySampleTime = 0;
+bool batteryWasSubscribed = false;
+
+BatteryPacket readNodeBattery() {
+  uint32_t totalMv = 0;
+  (void)analogReadMilliVolts(BATTERY_ADC_PIN); // Discard first conversion.
+  for (uint8_t i = 0; i < 16; ++i)
+    totalMv += analogReadMilliVolts(BATTERY_ADC_PIN);
+  BatteryPacket packet = {};
+  packet.nodeId = NODE_ID;
+  packet.millivolts = static_cast<uint16_t>((totalMv * 2 + 8) / 16);
+  packet.marker = BATTERY_PACKET_MARKER;
+  // Coarse voltage-based estimate for a 1S 4.2V Li-ion/LiPo cell, not a
+  // fuel-gauge measurement. Charging/load and regulator dropout affect it.
+  if (packet.millivolts < 2500 || packet.millivolts > 4500)
+    packet.percent = BATTERY_PERCENT_UNKNOWN;
+  else if (packet.millivolts <= BATTERY_EMPTY_MV)
+    packet.percent = 0;
+  else if (packet.millivolts >= BATTERY_FULL_MV)
+    packet.percent = 100;
+  else
+    packet.percent = static_cast<uint8_t>(
+        (packet.millivolts - BATTERY_EMPTY_MV) * 100UL /
+        (BATTERY_FULL_MV - BATTERY_EMPTY_MV));
+  return packet;
+}
+
 // Sampling frequency: 20Hz (50ms) - Optimal for BLE & Wi-Fi coexistence and
 // queue stability
 const unsigned long SAMPLE_INTERVAL_MS = 50;
@@ -152,6 +186,10 @@ void setup() {
 
   printNodeBanner();
 
+  pinMode(BATTERY_ADC_PIN, INPUT);
+  analogReadResolution(12);
+  analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);
+
   // 1. Initialize MPU-6050 IMU
   NODE_LOGLN("🔍 [IMU] Initializing MPU-6050...");
   if (!imu.begin(I2C_SDA_PIN, I2C_SCL_PIN)) {
@@ -204,6 +242,27 @@ void setup() {
 
 void loop() {
   unsigned long now = millis();
+
+  // Battery telemetry is independent of IMU detection and sequence numbers.
+  const bool batterySubscribed = pImuCharacteristic != nullptr &&
+      pImuCharacteristic->getSubscribedCount() > 0;
+  if ((batterySubscribed && !batteryWasSubscribed) ||
+      now - lastBatterySampleTime >= BATTERY_INTERVAL_MS) {
+    lastBatterySampleTime = now;
+    BatteryPacket battery = readNodeBattery();
+    if (batterySubscribed)
+      pImuCharacteristic->notify(reinterpret_cast<uint8_t *>(&battery),
+                                 sizeof(battery));
+    if (battery.percent == BATTERY_PERCENT_UNKNOWN) {
+      NODE_LOGF("[BATTERY] Node #%d GPIO%d: invalid reading (%u mV)\n",
+                NODE_ID, BATTERY_ADC_PIN, static_cast<unsigned>(battery.millivolts));
+    } else {
+      NODE_LOGF("[BATTERY] Node #%d GPIO%d: %u mV, ~%u%%\n",
+                NODE_ID, BATTERY_ADC_PIN, static_cast<unsigned>(battery.millivolts),
+                static_cast<unsigned>(battery.percent));
+    }
+  }
+  batteryWasSubscribed = batterySubscribed;
 
   // Check for Serial commands (e.g. CAL) non-blockingly
   if (Serial.available()) {
@@ -454,12 +513,12 @@ void loop() {
 #endif
 
 // Wi-Fi Configuration
-const char *WIFI_SSID = "MMm";
-const char *WIFI_PASS = "123456789";
+const char *WIFI_SSID = "parky";
+const char *WIFI_PASS = "1212312121";
 
 // Node -> BLE -> Gateway -> local Docker Mosquitto -> subscribers.
 // Update this destination if the PC's DHCP-assigned Wi-Fi address changes.
-const char *MQTT_BROKER = "10.178.191.76";
+const char *MQTT_BROKER = "172.16.67.76";
 const uint16_t MQTT_PORT = 1883;
 const char *TOPIC_IMU = "planko/imu";
 const char *TOPIC_PAD = "planko/pad";
@@ -536,9 +595,9 @@ struct PadSensorState {
 PadSensorState sensors[TOTAL_PADS];
 const unsigned long DEBOUNCE_DELAY_MS = 40;
 
-// BLE central supports four node slots; this Gateway session expects Nodes 1 and 2.
+// BLE central supports four node slots; this Gateway session uses Nodes 1-3.
 const int MAX_NODES = 4;
-const uint8_t EXPECTED_NODE_IDS[] = {1, 2};
+const uint8_t EXPECTED_NODE_IDS[] = {1, 2, 3};
 const size_t EXPECTED_NODE_COUNT =
     sizeof(EXPECTED_NODE_IDS) / sizeof(EXPECTED_NODE_IDS[0]);
 NodeTelemetry nodesTelemetry[MAX_NODES];
@@ -593,6 +652,27 @@ struct NodeDatasetHistory {
 
 NodeDatasetHistory datasetHistory[MAX_NODES] = {};
 portMUX_TYPE datasetMux = portMUX_INITIALIZER_UNLOCKED;
+
+void appendBatteryJson(JsonObject node, int idx) {
+  portENTER_CRITICAL(&datasetMux);
+  const bool received = nodesTelemetry[idx].batteryReceived;
+  const uint16_t mv = nodesTelemetry[idx].batteryMillivolts;
+  const uint8_t percent = nodesTelemetry[idx].batteryPercent;
+  const uint32_t receivedAt = nodesTelemetry[idx].lastBatteryReceivedMillis;
+  portEXIT_CRITICAL(&datasetMux);
+  const bool packetRecent = received && millis() - receivedAt < 15000;
+  const bool valid = packetRecent && nodesTelemetry[idx].connected &&
+      percent <= 100 && mv >= 2500 && mv <= 4500;
+  node["battery_received"] = packetRecent;
+  node["battery_valid"] = valid;
+  node["battery_percent"] = nullptr;
+  node["battery_mv"] = nullptr;
+  if (packetRecent)
+    node["battery_mv"] = mv;
+  if (valid) {
+    node["battery_percent"] = percent;
+  }
+}
 const size_t MQTT_SAMPLE_BATCH_LIMIT = 4;
 uint16_t mqttPublishedSequence[MAX_NODES] = {};
 uint32_t mqttPublishedBootId[MAX_NODES] = {};
@@ -610,7 +690,7 @@ struct NodeConfig {
 NodeConfig nodeConfigs[MAX_NODES] = {
     {"Node 1 - Neck", "neck", "neck", "unknown"},
     {"Node 2 - Back", "lumbar", "back", "unknown"},
-    {"Node 3", "other", "other", "unknown"},
+    {"Node 3 - Arm", "other", "other", "unknown"},
     {"Node 4", "other", "other", "unknown"}};
 
 unsigned long lastMqttStreamTime = 0;
@@ -649,6 +729,7 @@ public:
     uid.toLowerCase();
     uid.toCharArray(nodeSensorUids[idx], sizeof(nodeSensorUids[idx]));
     portENTER_CRITICAL(&datasetMux);
+    nodesTelemetry[idx].batteryReceived = false;
     datasetHistory[idx].nextIndex = 0;
     datasetHistory[idx].count = 0;
     datasetHistory[idx].bootId = esp_random();
@@ -676,6 +757,31 @@ public:
 // BLE Notification Callback for receiving ImuPacket from Nodes
 void notifyCallback(NimBLERemoteCharacteristic *pRemoteChar, uint8_t *pData,
                     size_t length, bool isNotify) {
+  // Handle short battery packets before the legacy 20-byte length guard.
+  if (length == sizeof(BatteryPacket) &&
+      pData[sizeof(BatteryPacket) - 1] == BATTERY_PACKET_MARKER) {
+    BatteryPacket battery;
+    memcpy(&battery, pData, sizeof(battery));
+    if (battery.nodeId < 1 || battery.nodeId > MAX_NODES ||
+        (battery.percent > 100 && battery.percent != BATTERY_PERCENT_UNKNOWN))
+      return;
+    const int idx = battery.nodeId - 1;
+    const bool valid = battery.percent <= 100 &&
+        battery.millivolts >= 2500 && battery.millivolts <= 4500;
+    portENTER_CRITICAL(&datasetMux);
+    nodesTelemetry[idx].batteryMillivolts = battery.millivolts;
+    nodesTelemetry[idx].batteryPercent = valid ? battery.percent : BATTERY_PERCENT_UNKNOWN;
+    nodesTelemetry[idx].batteryReceived = true;
+    nodesTelemetry[idx].lastBatteryReceivedMillis = millis();
+    portEXIT_CRITICAL(&datasetMux);
+    // Do not update IMU freshness or sequence/loss counters for battery data.
+    if (valid)
+      Serial.printf("[GW-BATTERY] Node #%u: %u mV, ~%u%%\n",
+                    static_cast<unsigned>(battery.nodeId),
+                    static_cast<unsigned>(battery.millivolts),
+                    static_cast<unsigned>(battery.percent));
+    return;
+  }
   if (length < sizeof(ImuPacket)) {
     Serial.printf("⚠️ [GW-NOTIFY-LEN] Short packet: %u bytes (expected %u)\n",
                   (unsigned int)length, (unsigned int)sizeof(ImuPacket));
@@ -1022,9 +1128,16 @@ bool connectBlePeer(int idx, const NimBLEAddress &peerAddr) {
   }
   if (pClient->isConnected())
     return nodesTelemetry[idx].connected;
-  // Connection parameters: 20-40ms interval, latency 2, supervision timeout 200
-  // (2.0s)
-  pClient->setConnectionParams(16, 32, 2, 200);
+  // The Nodes publish at 20Hz. Give each BLE link a distinct connection
+  // interval and disable slave latency so queued notifications are not
+  // deferred across multiple events or repeatedly collide between links.
+  // BLE units are 1.25ms: Nodes 1-4 use 30, 35, 40, and 45ms respectively.
+  // Timeout 200 is 2.0s.
+  const uint16_t connectionInterval =
+      static_cast<uint16_t>(24 + (4 * (id - 1)));
+  pClient->setConnectionParams(connectionInterval, connectionInterval, 0, 200);
+  Serial.printf("[GATEWAY-BLE] Node #%d requested interval: %u ms, latency 0\n",
+                id, static_cast<unsigned>(connectionInterval * 5U / 4U));
   pClient->setConnectTimeout(5);
 
   if (!pClient->connect(peerAddr, true)) {
@@ -1295,6 +1408,7 @@ void publishImuStream() {
 
     JsonObject n = nodes.add<JsonObject>();
     n["nodeId"] = i + 1;
+    appendBatteryJson(n, i);
     n["sensor_uid"] = nodeSensorUids[i];
     n["mount_site"] = nodeConfigs[i].mountSite;
     n["body_part"] = nodeConfigs[i].bodyPart;
@@ -1587,10 +1701,12 @@ bool isAllowedConfigValue(const String &value, const char *const allowed[],
 }
 
 void loadNodeConfigs() {
-  static const char *const sites[] = {"wrist",  "neck",   "chest", "upper_back",
-                                      "lumbar", "pelvis", "head",  "other"};
+  static const char *const sites[] = {
+      "wrist", "neck", "chest", "upper_back", "lumbar", "pelvis", "head",
+      "right_forearm", "left_forearm", "right_upper_arm", "left_upper_arm",
+      "shoulder", "elbow", "other"};
   static const char *const bodyParts[] = {"neck", "back", "wrist", "chest",
-                                          "other"};
+                                          "shoulder", "elbow", "other"};
   static const char *const sides[] = {"unknown", "left", "right"};
   // Create the namespace on first boot; read-only open reports NOT_FOUND on
   // fresh boards. Keep the compiled defaults if NVS itself is unavailable.
@@ -1653,6 +1769,7 @@ void handleNodesApi() {
       ++connectedCount;
     JsonObject node = list.add<JsonObject>();
     node["nodeId"] = i + 1;
+    appendBatteryJson(node, i);
     node["name"] = nodeConfigs[i].name;
     node["mount_site"] = nodeConfigs[i].mountSite;
     node["body_part"] = nodeConfigs[i].bodyPart;
@@ -1671,10 +1788,12 @@ void handleNodesApi() {
 }
 
 void handleNodeConfigApi() {
-  static const char *const sites[] = {"wrist",  "neck",   "chest", "upper_back",
-                                      "lumbar", "pelvis", "head",  "other"};
+  static const char *const sites[] = {
+      "wrist", "neck", "chest", "upper_back", "lumbar", "pelvis", "head",
+      "right_forearm", "left_forearm", "right_upper_arm", "left_upper_arm",
+      "shoulder", "elbow", "other"};
   static const char *const bodyParts[] = {"neck", "back", "wrist", "chest",
-                                          "other"};
+                                          "shoulder", "elbow", "other"};
   static const char *const sides[] = {"unknown", "left", "right"};
   if (!webServer.hasArg("node_id")) {
     webServer.send(400, "application/json",

@@ -22,6 +22,7 @@ from imu_features import FEATURE_VERSION, feature_names, samples_to_windows
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "config" / "pose_labels.json"
+DEFAULT_DATASET_DIR = ROOT / "dataset" / "multinode"
 
 
 def load_config(path: Path) -> dict:
@@ -268,17 +269,18 @@ def feature_units(columns: list[str]) -> dict[str, str]:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("inputs", nargs="*", type=Path, help="Recording CSV files; defaults to whist/*.csv")
+    parser.add_argument("inputs", nargs="*", type=Path,
+                        help=f"Recording CSV files; defaults to {DEFAULT_DATASET_DIR}")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--output", type=Path, default=ROOT / "models" / "pose_model")
     parser.add_argument("--window", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
     config = load_config(args.config)
-    inputs = args.inputs or sorted((ROOT / "whist").glob("*.csv"))
+    inputs = args.inputs or sorted(DEFAULT_DATASET_DIR.glob("*.csv"))
     inputs = [path.resolve() for path in inputs if path.exists()]
     if not inputs:
-        parser.error("No input CSV files found")
+        parser.error(f"No input CSV files found; default dataset directory is {DEFAULT_DATASET_DIR}")
     windows, ignored = load_windows(inputs, config, args.window)
     action_windows = [row for row in windows if row["action_label"]]
     if not action_windows:
