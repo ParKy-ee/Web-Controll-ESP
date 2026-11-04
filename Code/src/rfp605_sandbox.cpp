@@ -10,39 +10,38 @@
 #if defined(RFP605_SANDBOX) || defined(RFP605_GATEWAY_INTEGRATION)
 
 #ifndef RFP605_ADC_PIN
-#define RFP605_ADC_PIN 32
+#define RFP605_ADC_PIN 34
 #endif
 #ifndef RFP605_MUX_S0_PIN
-#define RFP605_MUX_S0_PIN 16
+#define RFP605_MUX_S0_PIN 25
 #endif
 #ifndef RFP605_MUX_S1_PIN
-#define RFP605_MUX_S1_PIN 17
+#define RFP605_MUX_S1_PIN 26
 #endif
 #ifndef RFP605_MUX_S2_PIN
-#define RFP605_MUX_S2_PIN 18
+#define RFP605_MUX_S2_PIN 27
 #endif
 #ifndef RFP605_MUX_S3_PIN
-#define RFP605_MUX_S3_PIN 19
+#define RFP605_MUX_S3_PIN 14
 #endif
-// Bit N enables mux channel Cn. Keep all bits enabled when all 16 channels
-// have their own sensor and pull-down resistor wired.
+// Bit N enables mux channel Cn. For C0-C5: 0x003F.
 #ifndef RFP605_ACTIVE_MASK
-#define RFP605_ACTIVE_MASK 0xF801
+#define RFP605_ACTIVE_MASK 0x003F
 #endif
 #ifndef RFP605_CALIBRATION_SAMPLES
-#define RFP605_CALIBRATION_SAMPLES 20
+#define RFP605_CALIBRATION_SAMPLES 15
 #endif
 #ifndef RFP605_PRESS_DELTA_RAW
-#define RFP605_PRESS_DELTA_RAW 100
+#define RFP605_PRESS_DELTA_RAW 300
 #endif
 #ifndef RFP605_RELEASE_DELTA_RAW
-#define RFP605_RELEASE_DELTA_RAW 50
+#define RFP605_RELEASE_DELTA_RAW 150
 #endif
 #ifndef RFP605_MAX_PRESS_DELTA_RAW
-#define RFP605_MAX_PRESS_DELTA_RAW 300
+#define RFP605_MAX_PRESS_DELTA_RAW 500
 #endif
 #ifndef RFP605_MAX_RELEASE_DELTA_RAW
-#define RFP605_MAX_RELEASE_DELTA_RAW 150
+#define RFP605_MAX_RELEASE_DELTA_RAW 250
 #endif
 #ifndef RFP605_DEBUG_SCAN
 #define RFP605_DEBUG_SCAN 0
@@ -60,9 +59,9 @@ static constexpr uint8_t CHANNEL_COUNT = 16;
 static constexpr uint32_t SCAN_INTERVAL_MS = 50; // 20 Hz target per channel
 static constexpr uint8_t ADC_AVERAGE_COUNT = 4;
 static constexpr uint8_t ADC_DISCARD_COUNT = 4;
-static constexpr uint8_t PRESS_CONFIRM_SAMPLES = 2;
+static constexpr uint8_t PRESS_CONFIRM_SAMPLES = 1;
 static constexpr uint8_t RELEASE_CONFIRM_SAMPLES = 2;
-static constexpr uint16_t MUX_SETTLE_US = 1000;
+static constexpr uint16_t MUX_SETTLE_US = 200;
 
 static const char *const SENSOR_IDS[CHANNEL_COUNT] = {
     "RFP605_C00", "RFP605_C01", "RFP605_C02", "RFP605_C03",
@@ -124,6 +123,9 @@ static uint16_t readMillivoltsAverage() {
 }
 
 static void calibrateReleasedBaseline() {
+  Serial.println("\n========================================");
+  Serial.println("  [Auto-Calibrating C0-C5] กรุณาอย่าเพิ่งกดเซนเซอร์...  ");
+
   Serial.printf(
       "{\"type\":\"calibrating\",\"samples_per_channel\":%u,"
       "\"duration_ms\":%lu,\"instruction\":\"leave_sensors_released\"}\n",
@@ -178,21 +180,31 @@ static void calibrateReleasedBaseline() {
 
     state.pressDeltaRaw = pressDelta;
     state.releaseDeltaRaw = releaseDelta;
+
+    Serial.printf("  C%u Baseline = %u | Threshold = +%u\n",
+                  static_cast<unsigned>(channel),
+                  static_cast<unsigned>(state.baselineRaw),
+                  static_cast<unsigned>(state.pressDeltaRaw));
   }
+
+  Serial.println("  [Calibration Complete] พร้อมใช้งาน!");
+  Serial.println("========================================\n");
 
   Serial.printf(
       "{\"type\":\"ready\",\"mux\":\"CD74HC4067\","
       "\"adc_gpio\":%u,\"active_mask\":\"0x%04X\","
-      "\"scan_interval_ms\":50,\"debug_scan\":%u}\n",
+      "\"scan_interval_ms\":%lu,\"debug_scan\":%u}\n",
       static_cast<unsigned>(ADC_PIN),
       static_cast<unsigned>(ACTIVE_CHANNEL_MASK),
+      static_cast<unsigned long>(SCAN_INTERVAL_MS),
       static_cast<unsigned>(RFP605_DEBUG_SCAN));
 }
 
 static bool updatePressedState(ChannelState &state, uint16_t raw) {
-  const uint16_t deviation = raw >= state.baselineRaw
-                                 ? raw - state.baselineRaw
-                                 : state.baselineRaw - raw;
+  // With pull-down resistor on SIG, voltage increases when sensor is pressed.
+  const uint16_t deviation = raw > state.baselineRaw
+                                 ? static_cast<uint16_t>(raw - state.baselineRaw)
+                                 : 0;
 
   if (!state.pressed) {
     if (deviation >= state.pressDeltaRaw) {
@@ -379,7 +391,7 @@ uint16_t rfp605PressedMask() {
 #if defined(RFP605_SANDBOX) && !defined(RFP605_GATEWAY_INTEGRATION)
 void setup() {
   Serial.begin(115200);
-  delay(300);
+  delay(1000);
   rfp605Begin();
 }
 
