@@ -124,7 +124,7 @@ static uint16_t readMillivoltsAverage() {
 
 static void calibrateReleasedBaseline() {
   Serial.println("\n========================================");
-  Serial.println("  [Auto-Calibrating C0-C5] กรุณาอย่าเพิ่งกดเซนเซอร์...  ");
+  Serial.println("  [Auto-Calibrating active RFP605 channels] Leave sensors released...  ");
 
   Serial.printf(
       "{\"type\":\"calibrating\",\"samples_per_channel\":%u,"
@@ -280,9 +280,11 @@ void rfp605Start() {
     Serial.println("[RFP605] Failed to create sample queue");
     return;
   }
-  const BaseType_t result = xTaskCreatePinnedToCore(
-      rfp605SamplerTask, "rfp605_scan", 4096, nullptr, 1,
-      &rfp605TaskHandle, 1);
+  // Use an unpinned task so this target works on both single-core ESP32-C3
+  // and dual-core ESP32 boards.
+  const BaseType_t result =
+      xTaskCreate(rfp605SamplerTask, "rfp605_scan", 4096, nullptr, 1,
+                  &rfp605TaskHandle);
   if (result != pdPASS) {
     rfp605TaskHandle = nullptr;
     vQueueDelete(rfp605SampleQueue);
@@ -326,10 +328,14 @@ size_t rfp605Update(Rfp605Sample *samples, size_t capacity) {
     const uint32_t sequence = state.sequence++;
 #if defined(RFP605_GATEWAY_INTEGRATION)
     portENTER_CRITICAL(&rfp605StateMux);
-    const bool pressed = updatePressedState(state, raw);
+    const bool wasPressed = state.pressed;
+    (void)updatePressedState(state, raw);
+    const bool pressed = state.pressed;
+    const bool stateChanged = wasPressed != pressed;
     portEXIT_CRITICAL(&rfp605StateMux);
 #else
-    const bool pressed = updatePressedState(state, raw);
+    const bool active = updatePressedState(state, raw);
+    const bool pressed = state.pressed;
 #endif
 
     const uint16_t deviation = raw >= state.baselineRaw
@@ -352,9 +358,15 @@ size_t rfp605Update(Rfp605Sample *samples, size_t capacity) {
         static_cast<unsigned>(deviation), static_cast<unsigned>(raw),
         static_cast<unsigned>(millivolts), pressed ? "true" : "false");
 #else
-    // No record is emitted for an unpressed channel.
-    if (!pressed)
+#if defined(RFP605_GATEWAY_INTEGRATION)
+    // Stream live samples while pressed and one final sample on release.
+    if (!pressed && !stateChanged)
       continue;
+#else
+    // Standalone sandbox keeps its compact pressed-sample behavior.
+    if (!active)
+      continue;
+#endif
 
     const uint16_t millivolts = readMillivoltsAverage();
     if (samples != nullptr && sampleCount < capacity) {
@@ -367,6 +379,7 @@ size_t rfp605Update(Rfp605Sample *samples, size_t capacity) {
       sample.deviationRaw = deviation;
       sample.pressureRaw = raw;
       sample.voltageMv = millivolts;
+      sample.pressed = pressed;
     }
 #endif
   }
