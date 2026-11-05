@@ -11,6 +11,7 @@ struct Rfp605Sample {
   uint16_t deviationRaw;
   uint16_t pressureRaw;
   uint16_t voltageMv;
+  bool pressed;
 };
 
 void rfp605Begin();

@@ -568,8 +568,8 @@ struct PadConfig {
 };
 
 #if defined(RFP605_GATEWAY_INTEGRATION)
-// The ESP32-DevKit RFP605 target does not use the C3 GPIO pad map. In
-// particular, GPIOs 6, 7 and 10 are connected to flash on classic ESP32.
+// The RFP605 mux owns the pressure-input GPIOs in this build, so direct pad
+// inputs are disabled to avoid pin conflicts.
 const PadConfig PAD_CONFIGS[] = {
     {"L1", -1}, {"L2", -1}, {"L3", -1}, {"L4", -1},
     {"L5", -1}, {"L6", -1}, {"L7", -1}, {"L8", -1},
@@ -1558,7 +1558,8 @@ void publishRfp605Stream() {
     row["deviation_raw"] = sample.deviationRaw;
     row["pressure_raw"] = sample.pressureRaw;
     row["voltage_mV"] = sample.voltageMv;
-    row["pressed"] = true;
+    row["pressed"] = sample.pressed;
+    row["event"] = sample.pressed ? "pressed" : "released";
   }
 
   String output;

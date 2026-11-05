@@ -419,6 +419,7 @@
             <span style="color:var(--muted);">Voltage: <b id="pressVolt" style="color:var(--text);">0.00 V</b></span>
             <span style="color:var(--muted);">ช่วงสเกล: <b>0 - 4095 (12-bit)</b></span>
           </div>
+          <div id="pressSource" style="margin-top:6px; color:var(--muted); font-size:11px;">Waiting for pressure data</div>
         </aside>
         <aside class="side-card battery-card">
           <div class="side-heading">
@@ -722,6 +723,8 @@
     const pressVolt = $("pressVolt");
     const pressFill = $("pressFill");
     const pressBadge = $("pressBadge");
+    const pressSource = $("pressSource");
+    const rfp605ChannelStates = new Map();
     const nodeBatteryList = $("nodeBatteryList");
     const batterySummary = $("batterySummary");
     const fpsText = $("fpsText");
@@ -1848,7 +1851,8 @@
         ? requestedMqttPort : 9001,
       path: mqttUrlParams.get("mqttPath") || "/mqtt",
       useSSL: mqttUrlParams.get("mqttTls") === "1",
-      topic: "planko/imu"
+      topic: "planko/imu",
+      pressureTopic: "planko/pressure"
     });
     const MQTT_TRANSPORT = MQTT_CONFIG.useSSL ? "WSS" : "WS";
     $("brokerHost").value = MQTT_CONFIG.host;
@@ -1934,8 +1938,60 @@
       mqttConsole("browser offline event", { navigatorOnline: navigator.onLine });
     });
 
+    function renderPressureReading(raw, voltage, pressed, source) {
+      const safeRaw = Math.min(4095, Math.max(0, Number(raw) || 0));
+      const safeVoltage = Math.max(0, Number(voltage) || 0);
+      pressRaw.textContent = safeRaw.toLocaleString();
+      pressVolt.textContent = safeVoltage.toFixed(2) + " V";
+      pressFill.style.width = (safeRaw / 4095 * 100).toFixed(1) + "%";
+      pressBadge.className = pressed ? "badge-press active" : "badge-press";
+      pressBadge.textContent = `${pressed ? "PRESSED" : "RELEASED"}${source ? " · " + source : ""}`;
+      pressSource.textContent = source || "RFP602 pressure input";
+    }
+
+    function handlePressureMessage(msg) {
+      try {
+        const data = JSON.parse(msg.payloadString);
+        if (data?.type === "rfp605_stream" && Array.isArray(data.samples)) {
+          const selectedGateway = $("gatewayFilter").value.trim();
+          if (selectedGateway && data.gatewayId && data.gatewayId !== selectedGateway) return;
+          let latest = null;
+          for (const sample of data.samples) {
+            const channel = Number(sample.channel);
+            const raw = Number(sample.pressure_raw);
+            const voltageMv = Number(sample.voltage_mV);
+            if (!Number.isInteger(channel) || channel < 0 || channel > 15 ||
+                !Number.isFinite(raw) || !Number.isFinite(voltageMv)) continue;
+            const state = {channel, raw, voltage: voltageMv / 1000, pressed: sample.pressed === true};
+            rfp605ChannelStates.set(channel, state);
+            latest = state;
+          }
+          if (latest) {
+            const active = [...rfp605ChannelStates.values()]
+              .filter(state => state.pressed)
+              .map(state => `C${String(state.channel).padStart(2, "0")}`);
+            const source = active.length
+              ? `RFP605 · pressed ${active.join(", ")}`
+              : `RFP605 · C${String(latest.channel).padStart(2, "0")}`;
+            renderPressureReading(latest.raw, latest.voltage, active.length > 0, source);
+          }
+          return;
+        }
+        if (Number.isFinite(Number(data?.raw)) && Number.isFinite(Number(data?.voltage))) {
+          renderPressureReading(data.raw, data.voltage, data.pressed === true, "RFP602");
+        }
+      } catch (error) {
+        mqttConsole("invalid pressure payload", {message: error.message});
+      }
+    }
+
     function onMqttMessageArrived(msg) {
-      if (msg.destinationName !== MQTT_CONFIG.topic || msg.retained) return;
+      if (msg.retained) return;
+      if (msg.destinationName === MQTT_CONFIG.pressureTopic) {
+        handlePressureMessage(msg);
+        return;
+      }
+      if (msg.destinationName !== MQTT_CONFIG.topic) return;
       try {
         const data = JSON.parse(msg.payloadString);
         if (!data || data.type !== "imu_stream" || !Array.isArray(data.nodes)) return;
@@ -2026,7 +2082,7 @@
           port: MQTT_CONFIG.port,
           path: MQTT_CONFIG.path,
           transport: MQTT_TRANSPORT,
-          topic: MQTT_CONFIG.topic,
+          topics: [MQTT_CONFIG.topic, MQTT_CONFIG.pressureTopic],
           mqttVersion: 4,
           timeoutSeconds: 10,
           navigatorOnline: navigator.onLine,
@@ -2058,29 +2114,28 @@
               elapsedMs: Date.now() - attemptStartedAt,
               connected: client.isConnected()
             });
-            client.subscribe(MQTT_CONFIG.topic, {
-              qos: 0,
-              onSuccess: () => {
-                if (generation !== mqttGeneration) return;
-                mqttConsole("SUBSCRIBE accepted", {
-                  attempt,
-                  generation,
-                  topic: MQTT_CONFIG.topic,
-                  qos: 0
-                });
-                setMqttStatus("online", `Connected ${MQTT_CONFIG.host}:${MQTT_CONFIG.port} (${MQTT_TRANSPORT})`);
-                sourceLabel.textContent = `Topic: ${MQTT_CONFIG.topic} | target 20 Hz`;
-              },
-              onFailure: (error) => {
-                mqttConsole("SUBSCRIBE rejected", {
-                  attempt,
-                  generation,
-                  topic: MQTT_CONFIG.topic,
-                  ...mqttErrorDetails(error)
-                });
-                retry("Subscribe failed: " + (error.errorMessage || "unknown error"));
-              }
-            });
+            const topics = [MQTT_CONFIG.topic, MQTT_CONFIG.pressureTopic];
+            let pendingSubscriptions = topics.length;
+            for (const topic of topics) {
+              client.subscribe(topic, {
+                qos: 0,
+                onSuccess: () => {
+                  if (generation !== mqttGeneration) return;
+                  mqttConsole("SUBSCRIBE accepted", {attempt, generation, topic, qos: 0});
+                  pendingSubscriptions--;
+                  if (pendingSubscriptions === 0) {
+                    setMqttStatus("online", `Connected ${MQTT_CONFIG.host}:${MQTT_CONFIG.port} (${MQTT_TRANSPORT})`);
+                    sourceLabel.textContent = `Topics: ${topics.join(" + ")} | IMU target 20 Hz`;
+                  }
+                },
+                onFailure: (error) => {
+                  mqttConsole("SUBSCRIBE rejected", {
+                    attempt, generation, topic, ...mqttErrorDetails(error)
+                  });
+                  retry("Subscribe failed: " + (error.errorMessage || "unknown error"));
+                }
+              });
+            }
           },
           onFailure: (error) => {
             mqttConsole("MQTT CONNECT failed", {
@@ -2124,16 +2179,8 @@
 
         // Pressure Sensor
         if (data.pressure) {
-          const raw = data.pressure.raw || 0;
-          const volt = data.pressure.voltage || 0;
-          const isPressed = !!data.pressure.pressed;
-
-          pressRaw.textContent = raw.toLocaleString();
-          pressVolt.textContent = volt.toFixed(2) + " V";
-          const percent = Math.min(100, Math.max(0, (raw / 4095) * 100));
-          pressFill.style.width = percent.toFixed(1) + "%";
-          pressBadge.className = isPressed ? "badge-press active" : "badge-press";
-          pressBadge.textContent = isPressed ? "PRESSED" : "RELEASED";
+          renderPressureReading(data.pressure.raw, data.pressure.voltage,
+            data.pressure.pressed === true, "RFP602");
         }
 
         // Process Nodes
