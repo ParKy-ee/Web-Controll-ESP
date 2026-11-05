@@ -513,7 +513,7 @@ void loop() {
 #endif
 
 // Wi-Fi Configuration
-const char *WIFI_SSID = "parky";
+const char *WIFI_SSID = "Parky";
 const char *WIFI_PASS = "1212312121";
 
 // Node -> BLE -> Gateway -> local Docker Mosquitto -> subscribers.
