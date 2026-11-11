@@ -318,6 +318,12 @@ size_t rfp605Update(Rfp605Sample *samples, size_t capacity) {
     return 0;
   lastScanMs = now;
   size_t sampleCount = 0;
+#if RFP605_DEBUG_SCAN
+  static uint32_t lastDebugMs = 0;
+  const bool logScan = now - lastDebugMs >= 1000;
+  if (logScan)
+    lastDebugMs = now;
+#endif
 
   for (uint8_t channel = 0; channel < CHANNEL_COUNT; ++channel) {
     if ((ACTIVE_CHANNEL_MASK & (1U << channel)) == 0)
@@ -344,20 +350,16 @@ size_t rfp605Update(Rfp605Sample *samples, size_t capacity) {
     const uint32_t sampleMs = millis();
 
 #if RFP605_DEBUG_SCAN
-    const uint16_t millivolts = readMillivoltsAverage();
-    Serial.printf(
-        "{\"type\":\"debug\",\"id\":\"%s\",\"channel\":%u,"
-        "\"seq\":%lu,\"sample_ms\":%lu,\"baseline_raw\":%u,"
-        "\"press_delta_raw\":%u,\"deviation_raw\":%u,"
-        "\"pressure_raw\":%u,\"voltage_mV\":%u,\"pressed\":%s}\n",
-        SENSOR_IDS[channel], static_cast<unsigned>(channel),
-        static_cast<unsigned long>(sequence),
-        static_cast<unsigned long>(millis()),
-        static_cast<unsigned>(state.baselineRaw),
-        static_cast<unsigned>(state.pressDeltaRaw),
-        static_cast<unsigned>(deviation), static_cast<unsigned>(raw),
-        static_cast<unsigned>(millivolts), pressed ? "true" : "false");
-#else
+    if (logScan) {
+      const int delta = static_cast<int>(raw) - state.baselineRaw;
+      Serial.printf(
+          "[RFP605 ADC] C%u raw=%u baseline=%u delta=%d press=+%u release=+%u pressed=%u\n",
+          static_cast<unsigned>(channel), static_cast<unsigned>(raw),
+          static_cast<unsigned>(state.baselineRaw), delta,
+          static_cast<unsigned>(state.pressDeltaRaw),
+          static_cast<unsigned>(state.releaseDeltaRaw), pressed ? 1U : 0U);
+    }
+#endif
 #if defined(RFP605_GATEWAY_INTEGRATION)
     // Stream live samples while pressed and one final sample on release.
     if (!pressed && !stateChanged)
@@ -381,7 +383,6 @@ size_t rfp605Update(Rfp605Sample *samples, size_t capacity) {
       sample.voltageMv = millivolts;
       sample.pressed = pressed;
     }
-#endif
   }
   return sampleCount;
 }

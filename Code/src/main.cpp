@@ -1142,7 +1142,8 @@ bool connectBlePeer(int idx, const NimBLEAddress &peerAddr) {
 
   if (!pClient->connect(peerAddr, true)) {
     Serial.printf(
-        "❌ [GATEWAY-BLE] Failed to connect to Node #%d (will retry)\n", id);
+        "❌ [GATEWAY-BLE] Failed to connect to Node #%d (NimBLE error=%d; will retry)\n",
+        id, pClient->getLastError());
     return false;
   }
 
@@ -1495,8 +1496,11 @@ void publishImuStream() {
   static unsigned long lastPubFailLog = 0;
   if (!pubOk && (millis() - lastPubFailLog > 3000)) {
     lastPubFailLog = millis();
-    Serial.printf("⚠️ [MQTT] Publish to '%s' failed! rc=%d\n", TOPIC_IMU,
-                  mqttClient.state());
+    Serial.printf("⚠️ [MQTT] Publish to '%s' failed: rc=%d payload=%u bytes buffer=%u bytes connectedNodes=%d\n",
+                  TOPIC_IMU, mqttClient.state(),
+                  static_cast<unsigned>(output.length()),
+                  static_cast<unsigned>(mqttClient.getBufferSize()),
+                  connectedCount);
   }
 }
 
@@ -1875,7 +1879,7 @@ void handleSamplesApi() {
   JsonArray nodes = doc["nodes"].to<JsonArray>();
   const uint32_t now = millis();
   for (int i = 0; i < MAX_NODES; ++i) {
-    char bootKey[20], sequenceKey[20];
+    char bootKey[32], sequenceKey[32];
     snprintf(bootKey, sizeof(bootKey), "n%d_boot_id", i + 1);
     snprintf(sequenceKey, sizeof(sequenceKey), "n%d_after_seq", i + 1);
     const bool hasCursor =
@@ -2136,7 +2140,10 @@ void setup() {
            "planko/gateway/%s/cmd", mqttClientId);
   mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
   mqttClient.setCallback(gatewayMqttCallback);
-  mqttClient.setBufferSize(4096); // Four nodes with six axes and stream metadata.
+  if (!mqttClient.setBufferSize(8192)) {
+    Serial.printf("[MQTT] Failed to allocate 8192-byte buffer; using %u bytes\n",
+                  static_cast<unsigned>(mqttClient.getBufferSize()));
+  }
   mqttClient.setKeepAlive(30);
   mqttClient.setSocketTimeout(5);
 #if defined(RFP605_GATEWAY_INTEGRATION)

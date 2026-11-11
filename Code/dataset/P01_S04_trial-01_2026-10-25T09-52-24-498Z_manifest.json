@@ -7,7 +7,7 @@
   "subject_id": "P01",
   "session_id": "S01",
   "trial_id": "trial-01",
-  "action_label": "case_extension",
+  "action_label": "elbow_extension",
   "started_at": "2026-10-25T09:52:24.498Z",
   "stopped_at": "2026-10-25T09:52:40.850Z",
   "target_sampling_hz": 20,
@@ -32,7 +32,7 @@
       "discontinuities": 1,
       "unlabeled_samples": 0,
       "phase_reviewed_samples": 0,
-      "file": "P01_S01_trial-01_2026-10-25T09-52-24-498Z_node1_ac276e5c3112_neck_1.csv"
+      "file": "P01_S04_trial-01_2026-10-25T09-52-24-498Z_node1_ac276e5c3112_neck_1.csv"
     },
     {
       "node_id": 2,
@@ -48,7 +48,7 @@
       "discontinuities": 22,
       "unlabeled_samples": 0,
       "phase_reviewed_samples": 0,
-      "file": "P01_S01_trial-01_2026-10-25T09-52-24-498Z_node2_ac276e5c2d6a_lumbar_2.csv"
+      "file": "P01_S04_trial-01_2026-10-25T09-52-24-498Z_node2_ac276e5c2d6a_lumbar_2.csv"
     }
   ]
 }

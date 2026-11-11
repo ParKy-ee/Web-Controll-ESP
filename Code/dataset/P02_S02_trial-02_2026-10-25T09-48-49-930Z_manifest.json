@@ -7,7 +7,7 @@
   "subject_id": "P02",
   "session_id": "S02",
   "trial_id": "trial-02",
-  "action_label": "case_neutral",
+  "action_label": "hand_neutral",
   "started_at": "2026-10-25T09:48:49.930Z",
   "stopped_at": "2026-10-25T09:49:06.302Z",
   "target_sampling_hz": 20,

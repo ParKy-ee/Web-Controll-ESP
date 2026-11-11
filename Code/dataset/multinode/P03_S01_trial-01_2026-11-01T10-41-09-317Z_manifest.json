@@ -7,7 +7,7 @@
   "subject_id": "P03",
   "session_id": "S01",
   "trial_id": "trial-01",
-  "action_label": "case_neutral",
+  "action_label": "elbow_neutral",
   "record_mode": "paired_nodes",
   "started_at": "2026-11-01T10:41:09.317Z",
   "stopped_at": "2026-11-01T10:41:25.553Z",

@@ -7,7 +7,7 @@
   "subject_id": "P01",
   "session_id": "S03",
   "trial_id": "trial-01",
-  "action_label": "case_flexion",
+  "action_label": "elbow_flexion",
   "record_mode": "paired_nodes",
   "started_at": "2026-11-01T09:56:54.632Z",
   "stopped_at": "2026-11-01T09:57:10.898Z",
