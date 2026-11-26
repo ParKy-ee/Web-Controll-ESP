@@ -2,9 +2,13 @@
   "model_version": "pose-svm-rbf-v1",
   "window_seconds": 1.0,
   "sampling_hz": 20,
-  "action_windows": 1417,
+  "action_windows": 4384,
   "phase_windows": 0,
   "action_labels": [
+    "case_extension",
+    "case_flexion",
+    "case_neutral",
+    "elbow_extension",
     "elbow_neutral",
     "hand_neutral"
   ],
@@ -23,11 +27,35 @@
       "random_forest": {
         "available": true,
         "grouped_by": "subject_id",
-        "fold_count": 1,
-        "window_count": 1417,
-        "accuracy": 0.5796178343949044,
-        "macro_f1": 0.36693548387096775,
+        "fold_count": 4,
+        "window_count": 4384,
+        "accuracy": 0.527536231884058,
+        "macro_f1": 0.11511701454775458,
         "per_class": {
+          "case_extension": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "case_flexion": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "case_neutral": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "elbow_extension": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
           "elbow_neutral": {
             "precision": 0.0,
             "recall": 0.0,
@@ -36,22 +64,66 @@
           },
           "hand_neutral": {
             "precision": 1.0,
-            "recall": 0.5796178343949044,
-            "f1": 0.7338709677419355,
-            "support": 314
+            "recall": 0.527536231884058,
+            "f1": 0.6907020872865275,
+            "support": 345
           }
         },
         "confusion_matrix": [
           [
             0,
+            0,
+            0,
+            0,
+            0,
             0
           ],
           [
-            132,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            142,
+            0,
+            21,
             182
           ]
         ],
         "labels": [
+          "case_extension",
+          "case_flexion",
+          "case_neutral",
+          "elbow_extension",
           "elbow_neutral",
           "hand_neutral"
         ]
@@ -59,11 +131,35 @@
       "svm_rbf": {
         "available": true,
         "grouped_by": "subject_id",
-        "fold_count": 1,
-        "window_count": 1417,
-        "accuracy": 0.6656050955414012,
-        "macro_f1": 0.39961759082217974,
+        "fold_count": 4,
+        "window_count": 4384,
+        "accuracy": 0.5507246376811594,
+        "macro_f1": 0.11838006230529595,
         "per_class": {
+          "case_extension": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "case_flexion": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "case_neutral": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
+          "elbow_extension": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0
+          },
           "elbow_neutral": {
             "precision": 0.0,
             "recall": 0.0,
@@ -72,22 +168,66 @@
           },
           "hand_neutral": {
             "precision": 1.0,
-            "recall": 0.6656050955414012,
-            "f1": 0.7992351816443595,
-            "support": 314
+            "recall": 0.5507246376811594,
+            "f1": 0.7102803738317757,
+            "support": 345
           }
         },
         "confusion_matrix": [
           [
             0,
+            0,
+            0,
+            0,
+            0,
             0
           ],
           [
-            105,
-            209
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            137,
+            0,
+            18,
+            190
           ]
         ],
         "labels": [
+          "case_extension",
+          "case_flexion",
+          "case_neutral",
+          "elbow_extension",
           "elbow_neutral",
           "hand_neutral"
         ]

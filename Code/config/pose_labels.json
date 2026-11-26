@@ -16,7 +16,13 @@
     {"id": "case_flexion", "label": "ก้ม/งอ (flexion)"},
     {"id": "case_extension", "label": "แอ่น/เหยียด (extension)"},
     {"id": "case_lateral_left", "label": "เอียงซ้าย (lateral left)"},
-    {"id": "case_lateral_right", "label": "เอียงขวา (lateral right)"}
+    {"id": "case_lateral_right", "label": "เอียงขวา (lateral right)"},
+    {"id": "elbow_neutral", "label": "Forearm plank neutral"},
+    {"id": "elbow_flexion", "label": "Forearm plank flexion"},
+    {"id": "elbow_extension", "label": "Forearm plank extension"},
+    {"id": "hand_neutral", "label": "Hand plank neutral"},
+    {"id": "hand_flexion", "label": "Hand plank flexion"},
+    {"id": "hand_extension", "label": "Hand plank extension"}
   ],
   "mount_sites": {
     "wrist": {
@@ -86,9 +92,17 @@
     "other": {
       "label": "อื่น ๆ",
       "body_axis_profile": "manual"
+    },
+    "upper_back": {
+      "label": "หลังส่วนบน (Upper Back)",
+      "body_axis_profile": "upper_back"
     }
   },
   "body_parts": {
+    "back": {
+      "label": "หลัง",
+      "actions": []
+    },
     "wrist": {
       "label": "ข้อมือ",
       "actions": [

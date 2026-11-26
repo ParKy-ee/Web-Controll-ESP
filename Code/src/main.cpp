@@ -55,7 +55,8 @@ byte rates[RATE_SIZE] = {}, rateSpot = 0;
 unsigned long lastBeat = 0, lastBioNotifyTime = 0;
 const unsigned long BIO_NOTIFY_INTERVAL_MS = 250;
 bool initMax30102() {
-  if (!max30102.begin(Wire, I2C_SPEED_STANDARD)) return false;
+  if (!max30102.begin(Wire, I2C_SPEED_STANDARD))
+    return false;
   max30102.setup(0x1F, 4, 2, 100, 411, 4096);
   max30102.setPulseAmplitudeGreen(0);
   return true;
@@ -98,9 +99,9 @@ BatteryPacket readNodeBattery() {
   else if (packet.millivolts >= BATTERY_FULL_MV)
     packet.percent = 100;
   else
-    packet.percent = static_cast<uint8_t>(
-        (packet.millivolts - BATTERY_EMPTY_MV) * 100UL /
-        (BATTERY_FULL_MV - BATTERY_EMPTY_MV));
+    packet.percent =
+        static_cast<uint8_t>((packet.millivolts - BATTERY_EMPTY_MV) * 100UL /
+                             (BATTERY_FULL_MV - BATTERY_EMPTY_MV));
   return packet;
 }
 
@@ -245,7 +246,7 @@ void loop() {
 
   // Battery telemetry is independent of IMU detection and sequence numbers.
   const bool batterySubscribed = pImuCharacteristic != nullptr &&
-      pImuCharacteristic->getSubscribedCount() > 0;
+                                 pImuCharacteristic->getSubscribedCount() > 0;
   if ((batterySubscribed && !batteryWasSubscribed) ||
       now - lastBatterySampleTime >= BATTERY_INTERVAL_MS) {
     lastBatterySampleTime = now;
@@ -254,11 +255,11 @@ void loop() {
       pImuCharacteristic->notify(reinterpret_cast<uint8_t *>(&battery),
                                  sizeof(battery));
     if (battery.percent == BATTERY_PERCENT_UNKNOWN) {
-      NODE_LOGF("[BATTERY] Node #%d GPIO%d: invalid reading (%u mV)\n",
-                NODE_ID, BATTERY_ADC_PIN, static_cast<unsigned>(battery.millivolts));
+      NODE_LOGF("[BATTERY] Node #%d GPIO%d: invalid reading (%u mV)\n", NODE_ID,
+                BATTERY_ADC_PIN, static_cast<unsigned>(battery.millivolts));
     } else {
-      NODE_LOGF("[BATTERY] Node #%d GPIO%d: %u mV, ~%u%%\n",
-                NODE_ID, BATTERY_ADC_PIN, static_cast<unsigned>(battery.millivolts),
+      NODE_LOGF("[BATTERY] Node #%d GPIO%d: %u mV, ~%u%%\n", NODE_ID,
+                BATTERY_ADC_PIN, static_cast<unsigned>(battery.millivolts),
                 static_cast<unsigned>(battery.percent));
     }
   }
@@ -503,22 +504,23 @@ void loop() {
 #include <PubSubClient.h>
 #include <WebServer.h>
 #include <WiFi.h>
+#include <atomic>
 #include <esp_random.h>
 #include <esp_wifi.h>
-#include <atomic>
 #include <freertos/FreeRTOS.h>
 #include <freertos/portmacro.h>
+
 #if defined(RFP605_GATEWAY_INTEGRATION)
 #include "rfp605_sensor.h"
 #endif
 
 // Wi-Fi Configuration
-const char *WIFI_SSID = "Parky";
-const char *WIFI_PASS = "1212312121";
+const char *WIFI_SSID = "MMm";
+const char *WIFI_PASS = "123456789";
 
 // Node -> BLE -> Gateway -> local Docker Mosquitto -> subscribers.
 // Update this destination if the PC's DHCP-assigned Wi-Fi address changes.
-const char *MQTT_BROKER = "172.20.10.5";
+const char *MQTT_BROKER = "10.81.195.65";
 const uint16_t MQTT_PORT = 1883;
 const char *TOPIC_IMU = "planko/imu";
 const char *TOPIC_PAD = "planko/pad";
@@ -567,20 +569,11 @@ struct PadConfig {
   int8_t pin;
 };
 
-#if defined(RFP605_GATEWAY_INTEGRATION)
-// The RFP605 mux owns the pressure-input GPIOs in this build, so direct pad
-// inputs are disabled to avoid pin conflicts.
+// Direct pad GPIO inputs are disabled so the normal Gateway only handles the 3 BLE IMU nodes.
 const PadConfig PAD_CONFIGS[] = {
-    {"L1", -1}, {"L2", -1}, {"L3", -1}, {"L4", -1},
-    {"L5", -1}, {"L6", -1}, {"L7", -1}, {"L8", -1},
-    {"R1", -1}, {"R2", -1}, {"R3", -1}, {"R4", -1},
+    {"L1", -1}, {"L2", -1}, {"L3", -1}, {"L4", -1}, {"L5", -1}, {"L6", -1},
+    {"L7", -1}, {"L8", -1}, {"R1", -1}, {"R2", -1}, {"R3", -1}, {"R4", -1},
     {"R5", -1}, {"R6", -1}, {"R7", -1}, {"R8", -1}};
-#else
-const PadConfig PAD_CONFIGS[] = {
-    {"L1", -1}, {"L2", 1},  {"L3", 2},  {"L4", 3},  {"L5", 4},  {"L6", 5},
-    {"L7", 6},  {"L8", 7},  {"R1", 10}, {"R2", -1}, {"R3", -1}, {"R4", -1},
-    {"R5", -1}, {"R6", -1}, {"R7", -1}, {"R8", -1}};
-#endif
 
 const size_t TOTAL_PADS = sizeof(PAD_CONFIGS) / sizeof(PAD_CONFIGS[0]);
 
@@ -662,7 +655,7 @@ void appendBatteryJson(JsonObject node, int idx) {
   portEXIT_CRITICAL(&datasetMux);
   const bool packetRecent = received && millis() - receivedAt < 15000;
   const bool valid = packetRecent && nodesTelemetry[idx].connected &&
-      percent <= 100 && mv >= 2500 && mv <= 4500;
+                     percent <= 100 && mv >= 2500 && mv <= 4500;
   node["battery_received"] = packetRecent;
   node["battery_valid"] = valid;
   node["battery_percent"] = nullptr;
@@ -766,11 +759,12 @@ void notifyCallback(NimBLERemoteCharacteristic *pRemoteChar, uint8_t *pData,
         (battery.percent > 100 && battery.percent != BATTERY_PERCENT_UNKNOWN))
       return;
     const int idx = battery.nodeId - 1;
-    const bool valid = battery.percent <= 100 &&
-        battery.millivolts >= 2500 && battery.millivolts <= 4500;
+    const bool valid = battery.percent <= 100 && battery.millivolts >= 2500 &&
+                       battery.millivolts <= 4500;
     portENTER_CRITICAL(&datasetMux);
     nodesTelemetry[idx].batteryMillivolts = battery.millivolts;
-    nodesTelemetry[idx].batteryPercent = valid ? battery.percent : BATTERY_PERCENT_UNKNOWN;
+    nodesTelemetry[idx].batteryPercent =
+        valid ? battery.percent : BATTERY_PERCENT_UNKNOWN;
     nodesTelemetry[idx].batteryReceived = true;
     nodesTelemetry[idx].lastBatteryReceivedMillis = millis();
     portEXIT_CRITICAL(&datasetMux);
@@ -842,8 +836,9 @@ void notifyCallback(NimBLERemoteCharacteristic *pRemoteChar, uint8_t *pData,
     }
 
     if (telemetry.lastSequence == 0) {
-      Serial.printf("🎉 [GW-RECV] First combined packet from Node #%d! Seq: %u\n",
-                    pkt->nodeId, static_cast<unsigned>(pkt->sequence));
+      Serial.printf(
+          "🎉 [GW-RECV] First combined packet from Node #%d! Seq: %u\n",
+          pkt->nodeId, static_cast<unsigned>(pkt->sequence));
     } else {
       const uint16_t sequenceDelta =
           static_cast<uint16_t>(pkt->sequence - telemetry.lastSequence);
@@ -906,8 +901,8 @@ void notifyCallback(NimBLERemoteCharacteristic *pRemoteChar, uint8_t *pData,
       lastCombinedLogTime[idx] = receivedAt;
       Serial.printf("📥 [GW-RECV] Node #%d [COMBINED] | Seq: %5u | "
                     "P: %5.1f R: %5.1f Y: %5.1f | Drops: %u\n",
-                    pkt->nodeId, static_cast<unsigned>(pkt->sequence), telemetry.pitch,
-                    telemetry.roll, telemetry.yaw,
+                    pkt->nodeId, static_cast<unsigned>(pkt->sequence),
+                    telemetry.pitch, telemetry.roll, telemetry.yaw,
                     static_cast<unsigned>(telemetry.totalDropped));
     }
     return;
@@ -1103,7 +1098,8 @@ void resumeBleScanIfNeeded(bool forceRestart) {
     }
   } else {
     // All expected Nodes are connected. Stop scanning so the Gateway radio can
-    // focus on the active BLE links and Wi-Fi; restart if an expected Node drops.
+    // focus on the active BLE links and Wi-Fi; restart if an expected Node
+    // drops.
     if (pScan->isScanning()) {
       pScan->stop();
       pScan->clearResults();
@@ -1120,7 +1116,8 @@ bool connectBlePeer(int idx, const NimBLEAddress &peerAddr) {
   if (pClient == nullptr) {
     pClient = NimBLEDevice::createClient();
     if (pClient == nullptr) {
-      Serial.printf("❌ [GATEWAY-BLE] Could not create client for Node #%d\n", id);
+      Serial.printf("❌ [GATEWAY-BLE] Could not create client for Node #%d\n",
+                    id);
       return false;
     }
     pClient->setClientCallbacks(new GatewayClientCallbacks(id), true);
@@ -1141,9 +1138,9 @@ bool connectBlePeer(int idx, const NimBLEAddress &peerAddr) {
   pClient->setConnectTimeout(5);
 
   if (!pClient->connect(peerAddr, true)) {
-    Serial.printf(
-        "❌ [GATEWAY-BLE] Failed to connect to Node #%d (NimBLE error=%d; will retry)\n",
-        id, pClient->getLastError());
+    Serial.printf("❌ [GATEWAY-BLE] Failed to connect to Node #%d (NimBLE "
+                  "error=%d; will retry)\n",
+                  id, pClient->getLastError());
     return false;
   }
 
@@ -1185,9 +1182,9 @@ bool connectBlePeer(int idx, const NimBLEAddress &peerAddr) {
     return false;
   }
 
-  Serial.printf(
-      "🎉 [GATEWAY-BLE] Successfully subscribed to Node #%d telemetry! ATT MTU=%u\n",
-      id, static_cast<unsigned>(pClient->getMTU()));
+  Serial.printf("🎉 [GATEWAY-BLE] Successfully subscribed to Node #%d "
+                "telemetry! ATT MTU=%u\n",
+                id, static_cast<unsigned>(pClient->getMTU()));
   nodesTelemetry[idx].connected = true;
   nodesTelemetry[idx].lastReceivedMillis = millis();
   nodesTelemetry[idx].lastSequence = 0;
@@ -1250,9 +1247,9 @@ void maintainMqttConnection() {
         Serial.println("CONNECTED! 🎉");
         mqttClient.publish(TOPIC_STATUS, "online", false);
         if (mqttClient.subscribe(mqttCommandTopic, 0)) {
-          Serial.printf("📡 [MQTT] Ready! Publishing '%s', '%s', '%s'; listening on '%s'\n",
-                        TOPIC_IMU, TOPIC_PAD, TOPIC_PRESSURE,
-                        mqttCommandTopic);
+          Serial.printf("📡 [MQTT] Ready! Publishing '%s', '%s', '%s'; "
+                        "listening on '%s'\n",
+                        TOPIC_IMU, TOPIC_PAD, TOPIC_PRESSURE, mqttCommandTopic);
         } else {
           Serial.printf("⚠️ [MQTT] Subscribe failed for '%s'\n",
                         mqttCommandTopic);
@@ -1304,8 +1301,8 @@ void gatewayMqttCallback(char *topic, byte *payload, unsigned int length) {
 void sendPadPressEvent(const char *sensorId) {
   char jsonBuffer[128];
   snprintf(jsonBuffer, sizeof(jsonBuffer),
-           "{\"sensorId\":\"%s\",\"value\":1,\"gatewayId\":\"%s\"}",
-           sensorId, mqttClientId);
+           "{\"sensorId\":\"%s\",\"value\":1,\"gatewayId\":\"%s\"}", sensorId,
+           mqttClientId);
   if (mqttClient.connected()) {
     mqttClient.publish(TOPIC_PAD, jsonBuffer);
   }
@@ -1340,13 +1337,6 @@ void publishImuStream() {
   gw["bootId"] = gatewayBootId;
   gw["commandTopic"] = mqttCommandTopic;
 
-#if !defined(RFP605_GATEWAY_INTEGRATION)
-  JsonObject pressObj = doc["pressure"].to<JsonObject>();
-  pressObj["raw"] = rfp602RawValue;
-  pressObj["voltage"] = round(rfp602Voltage * 100.0f) / 100.0f;
-  pressObj["pressed"] = rfp602Pressed;
-#endif
-
   JsonArray nodes = doc["nodes"].to<JsonArray>();
   bool cursorAdvance[MAX_NODES] = {};
   uint16_t cursorSequence[MAX_NODES] = {};
@@ -1369,18 +1359,18 @@ void publishImuStream() {
       const size_t oldest =
           (history.nextIndex + DATASET_HISTORY_CAPACITY - history.count) %
           DATASET_HISTORY_CAPACITY;
-      latestSample = history.samples[
-          (history.nextIndex + DATASET_HISTORY_CAPACITY - 1) %
-          DATASET_HISTORY_CAPACITY];
+      latestSample =
+          history.samples[(history.nextIndex + DATASET_HISTORY_CAPACITY - 1) %
+                          DATASET_HISTORY_CAPACITY];
       nodeBootId = history.bootId;
       hasSample = true;
 
       const bool sameCursorEpoch =
-          mqttPublishedCursorValid[i] &&
-          mqttPublishedBootId[i] == nodeBootId;
-      uint16_t cursor = sameCursorEpoch ? mqttPublishedSequence[i]
-                                        : static_cast<uint16_t>(
-                                              history.samples[oldest].sequence - 1);
+          mqttPublishedCursorValid[i] && mqttPublishedBootId[i] == nodeBootId;
+      uint16_t cursor =
+          sameCursorEpoch
+              ? mqttPublishedSequence[i]
+              : static_cast<uint16_t>(history.samples[oldest].sequence - 1);
 
       for (size_t j = 0;
            j < history.count && newSampleCount < MQTT_SAMPLE_BATCH_LIMIT; ++j) {
@@ -1416,9 +1406,12 @@ void publishImuStream() {
     n["side"] = nodeConfigs[i].side;
     n["boot_id"] = nodeBootId;
     n["connected"] = nodeConnected;
-    n["seq"] = hasSample ? latestSample.sequence : nodesTelemetry[i].lastSequence;
-    n["ts"] = hasSample ? latestSample.timestamp : nodesTelemetry[i].lastTimestamp;
-    n["valid"] = hasSample && now - nodesTelemetry[i].lastRawReceivedMillis < 1000;
+    n["seq"] =
+        hasSample ? latestSample.sequence : nodesTelemetry[i].lastSequence;
+    n["ts"] =
+        hasSample ? latestSample.timestamp : nodesTelemetry[i].lastTimestamp;
+    n["valid"] =
+        hasSample && now - nodesTelemetry[i].lastRawReceivedMillis < 1000;
     n["calibrated"] = hasSample && latestSample.status == 1;
     // IMU bias calibration is not a relative-orientation calibration profile.
     n["relative_orientation_valid"] = false;
@@ -1496,37 +1489,17 @@ void publishImuStream() {
   static unsigned long lastPubFailLog = 0;
   if (!pubOk && (millis() - lastPubFailLog > 3000)) {
     lastPubFailLog = millis();
-    Serial.printf("⚠️ [MQTT] Publish to '%s' failed: rc=%d payload=%u bytes buffer=%u bytes connectedNodes=%d\n",
-                  TOPIC_IMU, mqttClient.state(),
-                  static_cast<unsigned>(output.length()),
-                  static_cast<unsigned>(mqttClient.getBufferSize()),
-                  connectedCount);
+    Serial.printf(
+        "⚠️ [MQTT] Publish to '%s' failed: rc=%d payload=%u bytes buffer=%u "
+        "bytes connectedNodes=%d\n",
+        TOPIC_IMU, mqttClient.state(), static_cast<unsigned>(output.length()),
+        static_cast<unsigned>(mqttClient.getBufferSize()), connectedCount);
   }
 }
 
 void readRfp602Sensor() {
-#if defined(RFP605_GATEWAY_INTEGRATION)
-  // This image reads the CD74HC4067 through the RFP605 scanner instead.
+  // Normal Gateway runs 3 BLE IMU nodes only (no RFP sensor polling).
   return;
-#else
-  const unsigned long now = millis();
-  if (now - lastRfp602SampleTime >= RFP602_SAMPLE_INTERVAL_MS) {
-    lastRfp602SampleTime = now;
-    rfp602RawValue = analogRead(RFP602_PIN);
-    rfp602Voltage = analogReadMilliVolts(RFP602_PIN) / 1000.0f;
-    rfp602Pressed = rfp602RawValue >= RFP602_PRESS_THRESHOLD;
-  }
-  if (mqttClient.connected() && now - lastRfp602MqttTime >= RFP602_MQTT_INTERVAL_MS) {
-    lastRfp602MqttTime = now;
-    JsonDocument doc;
-    doc["raw"] = rfp602RawValue;
-    doc["voltage"] = rfp602Voltage;
-    doc["pressed"] = rfp602Pressed;
-    String output;
-    serializeJson(doc, output);
-    mqttClient.publish(TOPIC_PRESSURE, output.c_str());
-  }
-#endif
 }
 
 #if defined(RFP605_GATEWAY_INTEGRATION)
@@ -1603,7 +1576,9 @@ void logRfp605StateChanges() {
 void publishBioTelemetry() {
   static unsigned long lastPublish = 0;
   const unsigned long now = millis();
-  if (!mqttClient.connected() || !nodesTelemetry[0].connected || now - lastPublish < 250) return;
+  if (!mqttClient.connected() || !nodesTelemetry[0].connected ||
+      now - lastPublish < 250)
+    return;
   lastPublish = now;
   JsonDocument doc;
   doc["nodeId"] = 1;
@@ -1718,33 +1693,37 @@ void loadNodeConfigs() {
   for (int i = 0; i < MAX_NODES; ++i) {
     char key[16];
     snprintf(key, sizeof(key), "name%d", i + 1);
-    String name = nodeConfigPreferences.isKey(key)
-                      ? nodeConfigPreferences.getString(key, nodeConfigs[i].name)
-                      : String(nodeConfigs[i].name);
+    String name =
+        nodeConfigPreferences.isKey(key)
+            ? nodeConfigPreferences.getString(key, nodeConfigs[i].name)
+            : String(nodeConfigs[i].name);
     if (name.length() > 0)
       name.toCharArray(nodeConfigs[i].name, sizeof(nodeConfigs[i].name));
 
     snprintf(key, sizeof(key), "site%d", i + 1);
-    String site = nodeConfigPreferences.isKey(key)
-                      ? nodeConfigPreferences.getString(key, nodeConfigs[i].mountSite)
-                      : String(nodeConfigs[i].mountSite);
+    String site =
+        nodeConfigPreferences.isKey(key)
+            ? nodeConfigPreferences.getString(key, nodeConfigs[i].mountSite)
+            : String(nodeConfigs[i].mountSite);
     if (isAllowedConfigValue(site, sites, sizeof(sites) / sizeof(sites[0])))
       site.toCharArray(nodeConfigs[i].mountSite,
                        sizeof(nodeConfigs[i].mountSite));
 
     snprintf(key, sizeof(key), "body%d", i + 1);
-    String body = nodeConfigPreferences.isKey(key)
-                      ? nodeConfigPreferences.getString(key, nodeConfigs[i].bodyPart)
-                      : String(nodeConfigs[i].bodyPart);
+    String body =
+        nodeConfigPreferences.isKey(key)
+            ? nodeConfigPreferences.getString(key, nodeConfigs[i].bodyPart)
+            : String(nodeConfigs[i].bodyPart);
     if (isAllowedConfigValue(body, bodyParts,
                              sizeof(bodyParts) / sizeof(bodyParts[0])))
       body.toCharArray(nodeConfigs[i].bodyPart,
                        sizeof(nodeConfigs[i].bodyPart));
 
     snprintf(key, sizeof(key), "side%d", i + 1);
-    String side = nodeConfigPreferences.isKey(key)
-                      ? nodeConfigPreferences.getString(key, nodeConfigs[i].side)
-                      : String(nodeConfigs[i].side);
+    String side =
+        nodeConfigPreferences.isKey(key)
+            ? nodeConfigPreferences.getString(key, nodeConfigs[i].side)
+            : String(nodeConfigs[i].side);
     if (isAllowedConfigValue(side, sides, sizeof(sides) / sizeof(sides[0])))
       side.toCharArray(nodeConfigs[i].side, sizeof(nodeConfigs[i].side));
   }
@@ -2025,13 +2004,7 @@ void setup() {
   Serial.printf("[RFP605] CD74HC4067 ready: ADC GPIO %d, active mask 0x%04X\n",
                 RFP605_ADC_PIN, static_cast<unsigned>(RFP605_ACTIVE_MASK));
 #else
-  // Initialize RFP-602 Pressure Sensor (ADC1_CH0 on GPIO 0)
-  analogReadResolution(12);
-  analogSetAttenuation(ADC_11db);
-  pinMode(RFP602_PIN, INPUT);
-  Serial.printf(
-      "🎯 [RFP602] Pressure sensor initialized on GPIO %d (ADC1_CH0)\n",
-      RFP602_PIN);
+  Serial.println("📡 [GATEWAY] Running in 3-Node IMU-only mode (RFP disabled)");
 #endif
 
   // Initialize Pads
@@ -2084,8 +2057,7 @@ void setup() {
   for (int i = 0; i < n; ++i) {
     Serial.printf("   - '%s' (RSSI: %d dBm, Ch: %d, Auth: %d)\n",
                   WiFi.SSID(i).c_str(), static_cast<int>(WiFi.RSSI(i)),
-                  static_cast<int>(WiFi.channel(i)),
-                  WiFi.encryptionType(i));
+                  static_cast<int>(WiFi.channel(i)), WiFi.encryptionType(i));
     if (WiFi.SSID(i) == WIFI_SSID) {
       targetChannel = WiFi.channel(i);
     }
@@ -2101,8 +2073,10 @@ void setup() {
     esp_wifi_set_config(WIFI_IF_STA, &current_conf);
   }
 
-  WiFi.setTxPower(WIFI_POWER_8_5dBm); // Use reduced TX power during association.
-  Serial.println("🌐 [WIFI] DHCP enabled: requesting IP, gateway and DNS from Wi-Fi AP");
+  WiFi.setTxPower(
+      WIFI_POWER_8_5dBm); // Use reduced TX power during association.
+  Serial.println(
+      "🌐 [WIFI] DHCP enabled: requesting IP, gateway and DNS from Wi-Fi AP");
   Serial.printf("⏳ [WIFI] Connecting to SSID: '%s'...\n", WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   int attempts = 0;
@@ -2126,23 +2100,23 @@ void setup() {
 
   Serial.printf("🎉 Wi-Fi Connected! IP: %s\n",
                 WiFi.localIP().toString().c_str());
-  Serial.printf("[WIFI] Gateway: %s | Subnet: %s | DNS1: %s | DNS2: %s\n",
-                WiFi.gatewayIP().toString().c_str(),
-                WiFi.subnetMask().toString().c_str(),
-                WiFi.dnsIP(0).toString().c_str(),
-                WiFi.dnsIP(1).toString().c_str());
+  Serial.printf(
+      "[WIFI] Gateway: %s | Subnet: %s | DNS1: %s | DNS2: %s\n",
+      WiFi.gatewayIP().toString().c_str(), WiFi.subnetMask().toString().c_str(),
+      WiFi.dnsIP(0).toString().c_str(), WiFi.dnsIP(1).toString().c_str());
   setupDatasetServer();
 
   // Initialize MQTT Client
   snprintf(mqttClientId, sizeof(mqttClientId), "PlanKO_GW_%08X",
            static_cast<unsigned>(ESP.getEfuseMac() & 0xFFFFFFFFULL));
-  snprintf(mqttCommandTopic, sizeof(mqttCommandTopic),
-           "planko/gateway/%s/cmd", mqttClientId);
+  snprintf(mqttCommandTopic, sizeof(mqttCommandTopic), "planko/gateway/%s/cmd",
+           mqttClientId);
   mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
   mqttClient.setCallback(gatewayMqttCallback);
   if (!mqttClient.setBufferSize(8192)) {
-    Serial.printf("[MQTT] Failed to allocate 8192-byte buffer; using %u bytes\n",
-                  static_cast<unsigned>(mqttClient.getBufferSize()));
+    Serial.printf(
+        "[MQTT] Failed to allocate 8192-byte buffer; using %u bytes\n",
+        static_cast<unsigned>(mqttClient.getBufferSize()));
   }
   mqttClient.setKeepAlive(30);
   mqttClient.setSocketTimeout(5);
@@ -2203,8 +2177,6 @@ void loop() {
 #if defined(RFP605_GATEWAY_INTEGRATION)
   publishRfp605Stream();
   logRfp605StateChanges();
-#else
-  readRfp602Sensor();
 #endif
   handlePadInputs();
   handleSerialSimulator();
@@ -2251,7 +2223,9 @@ void loop() {
   // Keep 50 ms cadence without catch-up bursts after blocking work.
   const unsigned long publishNow = millis();
   if (publishNow - lastMqttStreamTime >= MQTT_STREAM_INTERVAL_MS) {
-    lastMqttStreamTime += ((publishNow - lastMqttStreamTime) / MQTT_STREAM_INTERVAL_MS) * MQTT_STREAM_INTERVAL_MS;
+    lastMqttStreamTime +=
+        ((publishNow - lastMqttStreamTime) / MQTT_STREAM_INTERVAL_MS) *
+        MQTT_STREAM_INTERVAL_MS;
     publishImuStream();
   }
 
@@ -2295,17 +2269,15 @@ void loop() {
                   nodesSummary, static_cast<unsigned>(rfp605PressedMask()),
                   static_cast<unsigned>(ESP.getFreeHeap()), now / 1000);
 #else
-    Serial.printf("🌐 [GATEWAY] Wi-Fi: %s (%s) | MQTT: %s | BLE: %d/%u [%s] | "
-                  "RFP: %d (%s) | Heap: %uB | Uptime: %lus\n",
-                  (WiFi.status() == WL_CONNECTED) ? "ONLINE" : "OFFLINE",
-                  (WiFi.status() == WL_CONNECTED)
-                      ? WiFi.localIP().toString().c_str()
-                      : "No IP",
-                  mqttClient.connected() ? "CONNECTED" : "DISCONNECTED",
-                  connectedCount, static_cast<unsigned>(EXPECTED_NODE_COUNT),
-                  nodesSummary, rfp602RawValue,
-                  rfp602Pressed ? "PRESSED" : "RELEASED",
-                  static_cast<unsigned>(ESP.getFreeHeap()), now / 1000);
+    Serial.printf(
+        "🌐 [GATEWAY] Wi-Fi: %s (%s) | MQTT: %s | BLE: %d/%u [%s] | "
+        "Heap: %uB | Uptime: %lus\n",
+        (WiFi.status() == WL_CONNECTED) ? "ONLINE" : "OFFLINE",
+        (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString().c_str()
+                                        : "No IP",
+        mqttClient.connected() ? "CONNECTED" : "DISCONNECTED", connectedCount,
+        static_cast<unsigned>(EXPECTED_NODE_COUNT), nodesSummary,
+        static_cast<unsigned>(ESP.getFreeHeap()), now / 1000);
 #endif
   }
 }

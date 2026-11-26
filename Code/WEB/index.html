@@ -312,7 +312,7 @@
     <section class="toolbar" aria-label="เครื่องมือและการตั้งค่า">
       <div class="field">
         <span>Broker:</span>
-        <input type="text" id="brokerHost" value="127.0.0.1" readonly style="width:165px; opacity:.8;">
+        <input type="text" id="brokerHost" value="10.81.195.65" readonly style="width:165px; opacity:.8;">
       </div>
       <div class="field">
         <span>Topic:</span>
@@ -482,20 +482,11 @@
             <label class="rec-field">Case / Action Label (ใช้ร่วมกันทุก Node)
               <select id="sharedActionLabel" aria-label="เลือก Case หรือ Action Label ร่วมกัน">
                 <option value="">เลือกท่าของ case...</option>
-                <optgroup label="แพลงก์วางข้อศอก">
-                  <option value="elbow_neutral">วางข้อศอก · ท่าปกติ</option>
-                  <option value="elbow_flexion">วางข้อศอก · ก้ม/งอ</option>
-                  <option value="elbow_extension">วางข้อศอก · แอ่น/เหยียด</option>
-                  <option value="elbow_lateral_left">วางข้อศอก · เอียงซ้าย</option>
-                  <option value="elbow_lateral_right">วางข้อศอก · เอียงขวา</option>
-                </optgroup>
-                <optgroup label="แพลงก์วางมือ">
-                  <option value="hand_neutral">วางมือ · ท่าปกติ</option>
-                  <option value="hand_flexion">วางมือ · ก้ม/งอ</option>
-                  <option value="hand_extension">วางมือ · แอ่น/เหยียด</option>
-                  <option value="hand_lateral_left">วางมือ · เอียงซ้าย</option>
-                  <option value="hand_lateral_right">วางมือ · เอียงขวา</option>
-                </optgroup>
+                <option value="case_neutral">ท่าปกติ (neutral)</option>
+                <option value="case_flexion">ก้ม/งอ (flexion)</option>
+                <option value="case_extension">แอ่น/เหยียด (extension)</option>
+                <option value="case_lateral_left">เอียงซ้าย (lateral left)</option>
+                <option value="case_lateral_right">เอียงขวา (lateral right)</option>
               </select>
             </label>
           </div>
@@ -778,6 +769,7 @@
     // -------------------------------------------------------------
     const POSE_TAXONOMY = {
       mount_sites: {
+        upper_back: "หลังส่วนบน (upper_back)",
         wrist: "หลังมือ / ข้อมือ (wrist)",
         neck: "ลำคอ (neck)",
         lumbar: "หลังส่วนล่าง / เอว (lumbar)",
@@ -791,6 +783,14 @@
         other: "อื่นๆ (other)"
       },
       body_parts: {
+        back: {
+          label: "หลัง (Back)",
+          actions: [
+            { id: "case_neutral", label: "ท่าปกติ (neutral)" },
+            { id: "case_flexion", label: "ก้ม/งอ (flexion)" },
+            { id: "case_extension", label: "แอ่น/เหยียด (extension)" }
+          ]
+        },
         neck: {
           label: "ลำคอ (Neck)",
           actions: [
@@ -935,14 +935,18 @@
     const recUpperNodeSelect = $("recUpperNodeSelect");
     const recLowerNodeSelect = $("recLowerNodeSelect");
     const sharedActionLabel = $("sharedActionLabel");
-    const recNodeGrid = recUpperNodeSelect.parentElement.parentElement;
+    const recNodeGrid = recUpperNodeSelect.parentElement?.parentElement || document.createElement("div");
     const recModeField = document.createElement("label");
     recModeField.className = "rec-field";
     recModeField.append(document.createTextNode("Recording mode"));
     const recModeSelect = document.createElement("select");
     recModeSelect.id = "recModeSelect";
-    recModeSelect.append(new Option("Single Node", "single"), new Option("Upper + lower pair", "pair"), new Option("3 Nodes พร้อมกัน", "three"));
-    recModeSelect.value = "single";
+    recModeSelect.append(
+      new Option("All live Nodes (ทุก Node พร้อมกัน)", "all"),
+      new Option("Upper + lower pair (คู่หลังบน + หลังล่าง)", "pair"),
+      new Option("Single Node (1 Node)", "single")
+    );
+    recModeSelect.value = "all";
     recModeField.append(recModeSelect);
     const recSingleNodeField = document.createElement("label");
     recSingleNodeField.className = "rec-field";
@@ -952,8 +956,8 @@
     recSingleNodeSelect.append(new Option("Waiting for Node...", ""));
     recSingleNodeField.append(recSingleNodeSelect);
     recNodeGrid.prepend(recModeField, recSingleNodeField);
-    const recUpperNodeField = recUpperNodeSelect.closest("label");
-    const recLowerNodeField = recLowerNodeSelect.closest("label");
+    const recUpperNodeField = recUpperNodeSelect.closest?.("label") || recUpperNodeSelect.parentElement || document.createElement("label");
+    const recLowerNodeField = recLowerNodeSelect.closest?.("label") || recLowerNodeSelect.parentElement || document.createElement("label");
     let recordingNodeIds = new Set();
     const NODE_HOLD_MS = 2000;
 
@@ -990,30 +994,40 @@
     }
 
     function updateRecordModeLayout() {
-      const singleMode = recModeSelect.value === "single";
+      const mode = recModeSelect.value;
+      const singleMode = mode === "single";
+      const pairMode = mode === "pair";
       recSingleNodeField.hidden = !singleMode;
-      const pairMode = recModeSelect.value === "pair";
       recUpperNodeField.hidden = !pairMode;
       recLowerNodeField.hidden = !pairMode;
-      recStartBtn.textContent = singleMode ? "🔴 Start recording one Node"
-        : pairMode ? "🔴 Start recording upper + lower Nodes"
-        : "🔴 เริ่มบันทึก Node 1, 2, 3 พร้อมกัน";
-      const heading = recNodeGrid.parentElement.querySelector("strong");
+      recStartBtn.textContent = mode === "all"
+        ? "🔴 เริ่มบันทึกทุก Node พร้อมกัน"
+        : singleMode
+          ? "🔴 เริ่มบันทึก 1 Node"
+          : "🔴 เริ่มบันทึก 2 Node พร้อมกัน (หลังบน + หลังล่าง)";
+      const heading = recNodeGrid.parentElement?.querySelector?.("strong");
       const help = recNodeGrid.previousElementSibling;
       if (heading) heading.textContent = "IMU recording setup";
-      if (help) help.textContent = "เลือกบันทึก 1 Node, 2 Node หรือ Node 1–3 พร้อมกัน โดยใช้ Case/Action Label เดียวกัน";
+      if (help) help.textContent = "เลือกบันทึกทุก Node พร้อมกัน (เช่น Node 1 + 2 + 3), คู่หลังบน/หลังล่าง, หรือ 1 Node โดยทุก Node ที่เลือกจะใช้ Case/Action Label เดียวกัน";
       updateRecordPairStatus();
     }
 
     function updateRecordPairStatus() {
-      const byId = new Map(liveCaptureNodeEntries().map(entry => [Number(entry.node.nodeId), entry]));
+      const entries = liveCaptureNodeEntries();
+      const byId = new Map(entries.map(entry => [Number(entry.node.nodeId), entry]));
       const status = $("recordPairStatus");
-      if (recModeSelect.value === "three") {
-        const missing = [1, 2, 3].filter(id => !byId.has(id));
-        status.textContent = missing.length
-          ? `รอข้อมูล IMU จาก Node ${missing.join(", ")}`
-          : `พร้อมบันทึก Node 1, 2, 3 · Case: ${sharedActionLabel.value || "ยังไม่เลือก"}`;
-        status.style.color = missing.length || !sharedActionLabel.value ? "var(--orange)" : "var(--mint)";
+      if (recModeSelect.value === "all") {
+        if (!entries.length) {
+          status.textContent = "รอข้อมูล IMU จริงจาก Gateway ก่อนเริ่มบันทึก";
+          status.style.color = "var(--orange)";
+          return;
+        }
+        const summary = entries.map(entry => {
+          const nodeState = entry.present && entry.currentValid ? "LIVE" : "HOLD";
+          return `Node #${entry.node.nodeId} ${nodeState} (${entry.node.mount_site || "site?"})`;
+        }).join(" + ");
+        status.textContent = `พร้อมบันทึกพร้อมกัน ${entries.length} Node: ${summary} · Case: ${sharedActionLabel.value || "ยังไม่เลือก"}`;
+        status.style.color = sharedActionLabel.value ? "var(--mint)" : "var(--orange)";
         return;
       }
       if (recModeSelect.value === "single") {
@@ -1153,6 +1167,8 @@
 
     function refreshCaptureStats() {
       let total = 0;
+      const mode = recModeSelect.value;
+      const singleId = Number(recSingleNodeSelect.value);
       const upperId = Number(recUpperNodeSelect.value);
       const lowerId = Number(recLowerNodeSelect.value);
       for (const [key, entry] of captureNodes) {
@@ -1166,9 +1182,11 @@
         const span = recent.length > 1 ? recent.at(-1).device_time_s - recent[0].device_time_s : 0;
         const rate = live && span > 0 ? ((recent.length - 1) / span).toFixed(1) + " Hz" : "— Hz";
         const nodeId = Number(entry.node.nodeId);
-        const role = recModeSelect.value === "three" ? ([1, 2, 3].includes(nodeId) ? "เลือกบันทึก" : "ไม่เลือก")
-          : recModeSelect.value === "single" ? (nodeId === Number(recSingleNodeSelect.value) ? "เลือกบันทึก" : "ไม่เลือก")
-          : nodeId === upperId ? "หลังบน" : nodeId === lowerId ? "หลังล่าง" : "ไม่เลือก";
+        const role = mode === "all"
+          ? "เลือกบันทึก"
+          : mode === "single"
+            ? (nodeId === singleId ? "เลือกบันทึก" : "ไม่เลือก")
+            : (nodeId === upperId ? "หลังบน" : nodeId === lowerId ? "หลังล่าง" : "ไม่เลือก");
         const linkState = current ? "LIVE" : live ? "HOLD" : "รอ IMU จริง";
         entry.status.textContent = `${linkState} · ${role} · ${rate} · ${count} samples · ขาด ${stream?.missing || 0} · ตัดซ้ำ ${stream?.duplicates || 0} · ไม่ครบ ${stream?.invalid || 0}`;
         entry.status.style.color = current ? "var(--mint)" : "var(--orange)";
@@ -1180,33 +1198,45 @@
     setInterval(refreshCaptureStats, 500);
 
     function recordingControls(active) {
-      for (const id of ["gatewayFilter", "recSubjectId", "recSessionId", "recTrialId", "guidedTimerCheck", "recPhaseReviewed", "recClearBtn", "recUpperNodeSelect", "recLowerNodeSelect", "sharedActionLabel", "recModeSelect", "recSingleNodeSelect"]) $(id).disabled = active;
+      for (const id of ["gatewayFilter", "recSubjectId", "recSessionId", "recTrialId", "guidedTimerCheck", "recPhaseReviewed", "recClearBtn", "recUpperNodeSelect", "recLowerNodeSelect", "sharedActionLabel", "recModeSelect", "recSingleNodeSelect"]) {
+        if ($(id)) $(id).disabled = active;
+      }
       recStartBtn.disabled = active;
       recStopBtn.disabled = !active;
     }
 
     recStartBtn.addEventListener("click", () => {
-      const singleMode = recModeSelect.value === "single";
+      const mode = recModeSelect.value;
+      const singleMode = mode === "single";
+      const allMode = mode === "all";
       const singleId = Number(recSingleNodeSelect.value);
       const upperId = Number(recUpperNodeSelect.value);
       const lowerId = Number(recLowerNodeSelect.value);
-      if (recModeSelect.value === "pair" && (!Number.isInteger(upperId) || !Number.isInteger(lowerId) || upperId < 1 || lowerId < 1 || upperId === lowerId)) {
+      const liveEntries = liveCaptureNodeEntries();
+      const liveById = new Map(liveEntries.map(entry => [Number(entry.node.nodeId), entry]));
+      if (allMode && !liveEntries.length) {
+        alert("รอข้อมูล IMU จริงจาก Gateway ก่อนเริ่มบันทึก"); return;
+      }
+      if (!allMode && !singleMode && (!Number.isInteger(upperId) || !Number.isInteger(lowerId) || upperId < 1 || lowerId < 1 || upperId === lowerId)) {
         if (Number.isInteger(singleId) && singleId >= 1) {
           alert("Pair mode needs two different live Nodes. Switch Recording mode to Single Node to record one."); return;
         }
         alert("เลือก Node หลังบนและหลังล่างให้เป็นคนละ Node ก่อนเริ่ม"); return;
       }
-      const liveById = new Map(liveCaptureNodeEntries().map(entry => [Number(entry.node.nodeId), entry]));
       if (singleMode && (!Number.isInteger(singleId) || singleId < 1)) {
         alert("Select one Node before starting the recording."); return;
       }
-      const selectedNodeIds = singleMode ? [singleId] : recModeSelect.value === "pair" ? [upperId, lowerId] : [1, 2, 3];
+      const selectedNodeIds = allMode
+        ? liveEntries.map(entry => Number(entry.node.nodeId))
+        : singleMode
+          ? [singleId]
+          : [upperId, lowerId];
       const selectedEntries = selectedNodeIds.map(nodeId => liveById.get(nodeId));
       if (singleMode && !selectedEntries[0]) {
         alert("Wait for the selected Node to send live IMU samples, then try again."); return;
       }
       if (selectedEntries.some(entry => !entry)) {
-        alert(`รอข้อมูล IMU จาก Node ${selectedNodeIds.filter((id, i) => !selectedEntries[i]).join(", ")} ก่อนเริ่ม`); return;
+        alert("รอข้อมูล IMU จริงของ Node หลังบนและหลังล่างจาก Gateway ก่อนเริ่ม"); return;
       }
       if (!sharedActionLabel.value) { alert("เลือก Case/Action Label กลางที่จะใช้กับทุก Node ก่อนเริ่ม"); return; }
       const metadata = {};
@@ -1217,7 +1247,7 @@
       const gatewayId = $("gatewayFilter").value.trim();
       if (!gatewayId) { alert("เลือก Gateway ID ก่อนเริ่มบันทึก"); return; }
       metadata.action_label = sharedActionLabel.value;
-      metadata.record_mode = singleMode ? "single_node" : recModeSelect.value === "pair" ? "paired_nodes" : "three_nodes";
+      metadata.record_mode = allMode ? "all_nodes" : singleMode ? "single_node" : "paired_nodes";
       recordingNodeIds = new Set(selectedNodeIds);
       recordStartTime = Date.now();
       datasetRecorder.start(gatewayId, metadata, recordStartTime);
@@ -1299,8 +1329,6 @@
       const stamp = new Date(recordStartTime).toISOString().replace(/[:.]/g, "-");
       const base = `${safe(datasetRecorder.metadata.subject_id)}_${safe(datasetRecorder.metadata.session_id)}_${safe(datasetRecorder.metadata.trial_id)}_${stamp}`;
       const manifest = datasetRecorder.manifest();
-      manifest.broker = `${MQTT_CONFIG.useSSL ? "wss" : "ws"}://${MQTT_CONFIG.host}:${MQTT_CONFIG.port}${MQTT_CONFIG.path}`;
-      manifest.topic = MQTT_CONFIG.topic;
       let total = 0, files = 0;
       [...datasetRecorder.streams.values()].forEach((stream, index) => {
         if (!stream.rows.length) return;
@@ -1869,7 +1897,7 @@
     const mqttUrlParams = new URLSearchParams(location.search);
     const requestedMqttPort = Number(mqttUrlParams.get("mqttPort") || 9001);
     const MQTT_CONFIG = Object.freeze({
-      host: mqttUrlParams.get("broker") || "172.20.10.5",
+      host: mqttUrlParams.get("broker") || "10.81.195.65",
       port: Number.isInteger(requestedMqttPort) && requestedMqttPort > 0 && requestedMqttPort <= 65535
         ? requestedMqttPort : 9001,
       path: mqttUrlParams.get("mqttPath") || "/mqtt",
@@ -2241,11 +2269,22 @@
             seqText.textContent = node.seq ?? "—";
             sensorPill.textContent = node.isMock ? `Node #${node.nodeId} (Mock)` : `Node #${node.nodeId} (Real IMU)`;
 
+            if (node.mount_site && POSE_TAXONOMY.mount_sites[node.mount_site]) {
+              recSiteSelect.value = node.mount_site;
+            }
+            const mappedBody = PlanKOImu.trainingBody(node);
+            if (mappedBody && POSE_TAXONOMY.body_parts[mappedBody]) {
+              recBodyPartSelect.value = mappedBody;
+            } else if (node.body_part && POSE_TAXONOMY.body_parts[node.body_part]) {
+              recBodyPartSelect.value = node.body_part;
+            }
+
             let row;
             try {
               row = PlanKOImu.sampleFromMessage(data, node, {
-                mount_site: recSiteSelect.value, body_part: recBodyPartSelect.value,
-                side: $("recSideSelect").value
+                mount_site: node.mount_site || recSiteSelect.value,
+                body_part: node.body_part || recBodyPartSelect.value,
+                side: node.side || $("recSideSelect").value
               });
               $("sampleContractStatus").textContent = "Six axes ready: m/s^2 + rad/s";
             } catch (error) {
